@@ -1,0 +1,35 @@
+spring:
+  # ---------------- 测试数据源：H2 内存库 ----------------
+  # 与 dev 同构（MODE=MySQL + schema/data 自动导入），但独立命名，避免与开发实例混淆。
+  datasource:
+    driver-class-name: org.h2.Driver
+    url: jdbc:h2:mem:buddytest;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    username: sa
+    password: ''
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:sql/schema.sql
+      data-locations: classpath:sql/data.sql
+      # 用 UTF-8 读取脚本：否则 GBK 平台会把无 BOM 的 UTF-8 脚本按平台码解码，
+      # 菜单名等中文种子数据入库即乱码（这是本项目踩过的坑，测试环境同样要显式声明）
+      encoding: UTF-8
+      continue-on-error: false
+  # ---------------- Redis（@RepeatSubmit / 在线台账用；CI service 与本地均在 6379） ----------------
+  data:
+    redis:
+      host: ${BUDDY_REDIS_HOST:127.0.0.1}
+      port: ${BUDDY_REDIS_PORT:6379}
+      database: 0
+      timeout: 5s
+
+# 关掉 MyBatis SQL 打印（application.yml 里 dev 用 StdOutImpl，测试噪音大）
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+logging:
+  level:
+    com.lrs.buddy: info
+    org.quartz: warn
+    org.springframework.test: warn
