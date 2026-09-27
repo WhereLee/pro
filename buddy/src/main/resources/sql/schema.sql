@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS sys_user (
     version     INT          DEFAULT 0,
     remark      VARCHAR(500)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uk_sys_user_username ON sys_user (username, del_flag);
+CREATE UNIQUE INDEX uk_sys_user_username ON sys_user (username, del_flag);
 
 -- ---------------- 角色 ----------------
 CREATE TABLE IF NOT EXISTS sys_role (
@@ -78,8 +78,8 @@ CREATE TABLE IF NOT EXISTS sys_user_role (
     user_id BIGINT NOT NULL,
     role_id BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_ur_user ON sys_user_role (user_id);
-CREATE INDEX IF NOT EXISTS idx_ur_role ON sys_user_role (role_id);
+CREATE INDEX idx_ur_user ON sys_user_role (user_id);
+CREATE INDEX idx_ur_role ON sys_user_role (role_id);
 
 -- ---------------- 上传文件 ----------------
 CREATE TABLE IF NOT EXISTS sys_file (
@@ -119,8 +119,8 @@ CREATE TABLE IF NOT EXISTS sys_operate_log (
     cost_time      BIGINT,
     oper_time      DATETIME
 );
-CREATE INDEX IF NOT EXISTS idx_ol_time ON sys_operate_log (oper_time);
-CREATE INDEX IF NOT EXISTS idx_ol_operator ON sys_operate_log (operator_id);
+CREATE INDEX idx_ol_time ON sys_operate_log (oper_time);
+CREATE INDEX idx_ol_operator ON sys_operate_log (operator_id);
 
 -- ---------------- 定时任务 ----------------
 CREATE TABLE IF NOT EXISTS sys_job (
@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS sys_role_dept (
     role_id BIGINT NOT NULL,
     dept_id BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_rd_role ON sys_role_dept (role_id);
+CREATE INDEX idx_rd_role ON sys_role_dept (role_id);
 
 -- ---------------- 通知公告 ----------------
 -- status: 0 草稿 / 1 已发布 / 2 已撤回
@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS sys_notice_target (
     notice_id BIGINT NOT NULL,
     target_id BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_nt_notice ON sys_notice_target (notice_id);
+CREATE INDEX idx_nt_notice ON sys_notice_target (notice_id);
 
 -- 已读记录：一个用户对一条公告最多一条，用于计算未读数
 CREATE TABLE IF NOT EXISTS sys_notice_read (
@@ -206,7 +206,7 @@ CREATE TABLE IF NOT EXISTS sys_notice_read (
     user_id   BIGINT NOT NULL,
     read_time DATETIME
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uk_nr_notice_user ON sys_notice_read (notice_id, user_id);
+CREATE UNIQUE INDEX uk_nr_notice_user ON sys_notice_read (notice_id, user_id);
 
 -- ---------------- 角色-菜单关联 ----------------
 CREATE TABLE IF NOT EXISTS sys_role_menu (
@@ -214,5 +214,5 @@ CREATE TABLE IF NOT EXISTS sys_role_menu (
     role_id BIGINT NOT NULL,
     menu_id BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_rm_role ON sys_role_menu (role_id);
-CREATE INDEX IF NOT EXISTS idx_rm_menu ON sys_role_menu (menu_id);
+CREATE INDEX idx_rm_role ON sys_role_menu (role_id);
+CREATE INDEX idx_rm_menu ON sys_role_menu (menu_id);

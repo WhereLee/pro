@@ -1,0 +1,30 @@
+spring:
+  # MySQL 一致性集成测试专用 profile：直连本地/CI 的真实 MySQL（默认 root/root、库名 buddy）。
+  # 用于验证 utf8mb4 中文种子导入 + MyBatis 自定义 SQL 在真 MySQL 方言下工作，
+  # 与默认 H2 测试互补；这类用例需外部 MySQL，故 @Tag("mysql") 由 surefire 默认排除。
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${BUDDY_DB_HOST:127.0.0.1}:${BUDDY_DB_PORT:3306}/${BUDDY_DB_NAME:buddy}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
+    username: ${BUDDY_DB_USER:root}
+    password: ${BUDDY_DB_PASSWORD:root}
+  sql:
+    init:
+      # 每次对干净库建表+导入；schema.sql 与 H2 共用（刻意避开 MySQL 专有语法）
+      mode: always
+      schema-locations: classpath:sql/schema.sql
+      data-locations: classpath:sql/data.sql
+      encoding: UTF-8
+      continue-on-error: false
+  data:
+    redis:
+      host: ${BUDDY_REDIS_HOST:127.0.0.1}
+      port: ${BUDDY_REDIS_PORT:6379}
+      database: 0
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+logging:
+  level:
+    com.lrs.buddy: warn
