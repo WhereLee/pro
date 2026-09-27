@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.lrs.buddy.modules.sys.mapper.SysUserMapper">
+
+    <!--
+      说明：MyBatis-Plus 的逻辑删除只对 BaseMapper 内置方法自动生效，
+      自定义 SQL 必须自己带上 del_flag = 0，否则会把已删除数据查出来。
+    -->
+
+    <sql id="Base_Column_List">
+        id, username, password, nickname, email, phone, avatar, dept_id, status,
+        create_by, create_time, update_by, update_time, del_flag, version, remark
+    </sql>
+
+    <select id="selectByUsername" resultType="com.lrs.buddy.modules.sys.entity.SysUser">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM sys_user
+        WHERE username = #{username}
+        AND del_flag = 0
+        LIMIT 1
+    </select>
+
+    <!--
+      数据权限片段 ${query.sqlFilter} 由 DataScopeAspect 生成，
+      内容只来自当前用户角色的配置，不含任何前端输入，
+      因此可以用 ${} 直接拼接（#{} 会把片段当成字符串加引号，反而无法生效）。
+    -->
+    <select id="selectUserPage" resultType="com.lrs.buddy.modules.sys.model.vo.SysUserVO">
+        SELECT
+            u.id, u.username, u.nickname, u.email, u.phone, u.avatar,
+            u.dept_id AS deptId, u.status, u.create_time AS createTime, u.remark,
+            d.dept_name AS deptName
+        FROM sys_user u
+        LEFT JOIN sys_dept d ON u.dept_id = d.id AND d.del_flag = 0
+        WHERE u.del_flag = 0
+        <if test="query.username != null and query.username != ''">
+            AND u.username LIKE CONCAT('%', #{query.username}, '%')
+        </if>
+        <if test="query.nickname != null and query.nickname != ''">
+            AND u.nickname LIKE CONCAT('%', #{query.nickname}, '%')
+        </if>
+        <if test="query.phone != null and query.phone != ''">
+            AND u.phone LIKE CONCAT('%', #{query.phone}, '%')
+        </if>
+        <if test="query.status != null">
+            AND u.status = #{query.status}
+        </if>
+        <if test="query.deptId != null">
+            AND u.dept_id = #{query.deptId}
+        </if>
+        ${query.sqlFilter}
+        ORDER BY u.id DESC
+    </select>
+
+</mapper>

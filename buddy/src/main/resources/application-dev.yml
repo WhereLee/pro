@@ -1,0 +1,33 @@
+spring:
+  # ---------------- 数据源：H2 内存库 ----------------
+  # 使用 H2 的目的：不装任何数据库即可一键启动，方便演示与自动化测试。
+  # MODE=MySQL 让 H2 尽量贴合 MySQL 语法，且 schema.sql/data.sql 与 MySQL 共用。
+  # 注意：内存库进程退出即清空，仅用于开发。切换到 MySQL 见 application-mysql.yml。
+  datasource:
+    driver-class-name: org.h2.Driver
+    url: jdbc:h2:mem:buddy;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    username: sa
+    password: ''
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:sql/schema.sql
+      data-locations: classpath:sql/data.sql
+      continue-on-error: false
+      # 用 UTF-8 读取 schema/data 脚本。不显式指定时，Spring 在 GBK 平台会按平台码
+      # 解码无 BOM 的 UTF-8 脚本，导致菜单名/角色名等中文种子数据入库即乱码。
+      encoding: UTF-8
+
+  # ---------------- Redis ----------------
+  data:
+    redis:
+      host: ${BUDDY_REDIS_HOST:localhost}
+      port: ${BUDDY_REDIS_PORT:6379}
+      database: 0
+      timeout: 5s
+
+# H2 控制台：启动后可访问 /api/h2-console 查看数据
+h2:
+  console:
+    enabled: true
+    path: /h2-console

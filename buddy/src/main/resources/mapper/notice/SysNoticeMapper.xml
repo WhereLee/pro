@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.lrs.buddy.modules.notice.mapper.SysNoticeMapper">
+
+    <sql id="Base_Column_List">
+        n.id, n.title, n.content, n.type, n.status, n.target_type, n.publish_time,
+        n.create_by, n.create_time, n.update_by, n.update_time, n.del_flag, n.version, n.remark
+    </sql>
+
+    <!--
+      可见性条件被两个查询共用，抽成 SQL 片段避免两处逻辑漂移。
+      roleIds 为空集合时，按角色定向的分支自然不成立（IN 空集合），
+      不会影响"全体可见"的公告。
+    -->
+    <sql id="Visible_Condition">
+        n.del_flag = 0
+        AND n.status = 1
+        AND (
+            n.target_type = 1
+            OR (n.target_type = 2 AND EXISTS (
+                    SELECT 1 FROM sys_notice_target t
+                    WHERE t.notice_id = n.id
+                    AND t.target_id IN
+                    <foreach collection="roleIds" item="rid" open="(" separator="," close=")">
+                        #{rid}
+                    </foreach>
+                ))
+            OR (n.target_type = 3 AND EXISTS (
+                    SELECT 1 FROM sys_notice_target t
+                    WHERE t.notice_id = n.id AND t.target_id = #{userId}
+                ))
+        )
+    </sql>
+
+    <select id="selectVisible" resultType="com.lrs.buddy.modules.notice.entity.SysNotice">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM sys_notice n
+        WHERE
+        <include refid="Visible_Condition"/>
+        ORDER BY n.publish_time DESC, n.id DESC
+    </select>
+
+    <select id="countUnread" resultType="long">
+        SELECT COUNT(1)
+        FROM sys_notice n
+        WHERE
+        <include refid="Visible_Condition"/>
+        AND NOT EXISTS (
+            SELECT 1 FROM sys_notice_read r
+            WHERE r.notice_id = n.id AND r.user_id = #{userId}
+        )
+    </select>
+
+</mapper>

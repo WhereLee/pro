@@ -1,0 +1,33 @@
+# ============================================================
+# buddy monorepo .gitignore  (backend: buddy/  frontend: buddy-ui/)
+# ============================================================
+
+# --- build output ---
+target/
+dist/
+
+# --- dependencies ---
+node_modules/
+_old_node_modules/
+
+# --- runtime data & logs ---
+uploads/
+*.log
+
+# --- legacy standalone project at repo root (pending removal) ---
+# NOTE: leading slash is critical — "/src" ONLY ignores repo-root src/,
+#       NOT buddy/src or buddy-ui/src (real source code).
+/src/
+
+# --- stray validation screenshots at repo root ---
+/*.png
+
+# --- IDE / OS ---
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- local env / secrets ---
+*.env.local
