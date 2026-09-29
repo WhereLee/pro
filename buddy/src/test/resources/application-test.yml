@@ -25,6 +25,12 @@ barrier:
   scheduler:
     enabled: false
 
+# 设备接入层默认关闭：Broker 会占 1883 端口，并发跑多测试类时端口冲突会变成不可复现的随机红。
+# 需要真实 Broker 的用例自己开（IotTransportTest 用独立随机端口 + 显式 enabled=true）。
+buddy:
+  iot:
+    enabled: false
+
 logging:
   level:
     com.lrs.buddy: info

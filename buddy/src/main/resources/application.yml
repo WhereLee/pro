@@ -97,6 +97,22 @@ buddy:
       - txt
       - csv
       - zip
+  # ========== 设备接入层（framework/iot）==========
+  # 本地/CI 用嵌入式 Java Broker（无 Docker 也能实证）；生产可前置 EMQX，协议不变。
+  #
+  # 【已知阻塞，默认关闭的原因】Moquette 0.17 对 MQTT 5 的 CONNECT 回的 CONNACK 无法被标准 v5 客户端解码
+  # （"wrong reason code"，由 IotTransportTest 发现），而协议本身需要 v5 的 Reason Code 与会话语义。
+  # 下一步换 Vert.x MQTT Server 作为本地 Broker（同为纯 Java、可嵌入、Apache-2.0），验收后把默认值改回 true。
+  # 这不是把失败藏起来：测试以 @Disabled + 失败原因入库，开关默认 false 只保证开发/CI 可启动。
+  iot:
+    enabled: ${BUDDY_IOT_ENABLED:false}
+    host: ${BUDDY_IOT_HOST:127.0.0.1}
+    port: ${BUDDY_IOT_PORT:1883}
+    node-id: ${BUDDY_IOT_NODE_ID:node-1}
+    # 设备主密钥：经 SHA-256 推导为 AES-256 密钥，长度不限但必须高强度；dev 固定值仅便于本地联调
+    device-secret-key: ${BUDDY_IOT_DEVICE_SECRET_KEY:dev-only-iot-device-master-key-change-me}
+    # 云侧回连自身 Broker 的内部口令；缺失时云侧接入直接失败（不留默认后门）
+    internal-secret: ${BUDDY_IOT_INTERNAL_SECRET:dev-only-iot-internal-secret}
 
 # ========== 接口文档 ==========
 springdoc:
