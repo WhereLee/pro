@@ -39,28 +39,30 @@ Windows PowerShell 两个实测注意点：
 
 ## 3. 最近一次 run 快照（供对照）
 
-run `36565377941` · commit `225a079`（"barrier 样例并入框架基座 + 目录结构整理"）· 2026-09-29：
+run `36567189359` · commit `978360b` · 2026-09-29：**6/6 全绿**（含 security-scan 修复闭环）。
 
-| job | 结果 | 备注 |
-|---|---|---|
-| Backend (build + test + coverage) | ✅ success | 1m7s |
-| Frontend (type-check + build) | ✅ success | 33s |
-| Backend @ MySQL (consistency) | ✅ success | 1m37s |
-| Frontend E2E (Playwright) | ✅ success | 1m23s |
-| Docker images (build) | ✅ success | 新增 job 首跑通过 |
-| Security scan (Trivy) | ❌ failure | 3s 即失败（Set up job 阶段）；见 §4.1 |
+| job | 结果 |
+|---|---|
+| Backend (build + test + coverage) | ✅ success |
+| Frontend (type-check + build) | ✅ success |
+| Backend @ MySQL (consistency) | ✅ success |
+| Frontend E2E (Playwright) | ✅ success |
+| Docker images (build) | ✅ success |
+| Security scan (Trivy) | ✅ success |
 
-> `docker` 与 `security-scan` 两个 job 是本次提交（`225a079`）新增；更早的 run 只有前 4 个 job。
+> 历史：`225a079` 首跑 5 绿 1 红（security-scan，根因与修复全过程见 §4.1）；`docker` 与 `security-scan` 是 `225a079` 起新增的 job，更早的 run 只有前 4 个。
 
 ## 4. 已知问题与修复指引
 
-### 4.1 security-scan 失败：trivy-action 引用缺 `v` 前缀（一行修复）
+### 4.1 security-scan（已修复闭环）：引用的 action 版本链两层失效
 
-- **现象**：`Security scan (Trivy)` 在 "Set up job" 阶段失败：
-  `Unable to resolve action aquasecurity/trivy-action@0.28.0, unable to find version 0.28.0`
-- **根因**：trivy-action 的 release tag 命名为 `vX.Y.Z`；`0.28.0`（不带 v）这个 ref 不存在（API 实测 404，`v0.28.0` 存在）。
-- **修复**：`.github/workflows/ci.yml` 两处 `aquasecurity/trivy-action@0.28.0` 改为 `@v0.28.0`（建议同时升级到当前最新 `@v0.36.0`）。
-- **影响面**：仅该 job；其余 5 个 job 不受影响，修复前流水线整体为红。
+修复历程（2026-09-29，run `36565377941` → `36566439018` → `36567189359`）：
+
+1. **第一层**：`.github/workflows/ci.yml` 原写 `trivy-action@0.28.0`，缺 `v` 前缀（该库 tag 为 `vX.Y.Z`，`0.28.0` ref 不存在）→ "Set up job" 解析失败。
+2. **第二层**（补 `v` 后仍红）：`trivy-action@v0.28.0` 的 action.yaml 内部 pin 了 `aquasecurity/setup-trivy@v0.2.1`，该 tag 已被上游删除（现仅存 v0.2.6/v0.3.x）→ 嵌套引用解析失败。
+3. **最终修复**：升级为 `aquasecurity/trivy-action@v0.36.0`——其内部改为 pin setup-trivy 至 **commit SHA**（v0.2.6），不再受上游删 tag 影响；`scan-type/scan-ref/scanners/severity/ignore-unfixed/exit-code` 共 6 个在用输入已核对存在。
+
+**教训**：pin 第三方 action 版本时，要注意 composite action 的嵌套引用——间接依赖的 tag 也可能被上游删除；优先选内部以 SHA pin 依赖的版本。
 
 ### 4.2 弃用警告（非阻断，建议排期升级）
 
