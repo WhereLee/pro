@@ -329,16 +329,19 @@
 | `swap_event_dedup` | 上行去重（I6） | `(order_id, event_type, source_msg_id)` 唯一 |
 | `swap_compensation` | 补偿集台账（I8） | `(order_id, action, target)` 唯一 + `state` |
 | `swap_discrepancy` | 账实差异（对账/人工核资输入） | `(order_id, kind)` + 处理态 |
-| `swap_cabinet` / `swap_slot` | 柜机 / 仓位台账与健康 | `slot` 上 `active_order` **生成列唯一**（I2） |
-| `swap_battery` | 电池档案 + 资产态 + 归属 | `holder_active` **生成列唯一**（I1）；循环次数、SOH、入库/激活/隔离史 |
-| `swap_right_occupation` | 权益预占/扣减/释放 | `(user_id)` 在途唯一；`(order_id, kind)` 幂等唯一 |
-| `swap_battery_binding` | 使用权绑定（谁在用哪块） | `active_user` **生成列唯一**（I9）；变更仅来订单终态/人工核销 |
+| `swap_site` / `swap_cabinet` | 站点与柜机台账 | 柜机与 `iot_device` 1:1（`uk_cab_device`）；站点门槛**只能收紧**由同表 CHECK 兑现（冗余型号默认值，代价见 `swap-ddl.md` §4.4） |
+| `swap_slot` / `swap_slot_reservation` | 仓位台账与健康 / 预占台账 | I2 落在**预占台账**的 `active_slot` 生成列唯一索引（`swap_slot` 单行单态天然成立，台账才需要历史多条） |
+| `swap_battery` | 电池档案 + 资产态 + 当前位 | 台账与健康度；**`holder_user_id` 等为投影缓存，真相在 binding**（见 [`swap-ddl.md`](swap-ddl.md) §6） |
+| `swap_right_account` + `swap_right_transaction` | 权益快照（guard 热路径）+ 不可变流水 | 预占以 `times_occupied` 列表达（不单建表）；账户 CHECK `times_total >= times_used`；流水 `(order_id, kind)` 幂等唯一；**快照与流水必须同事务写**，恒等式由日终对账校验 |
+| `swap_battery_binding` | 使用权绑定（谁在用哪块） | `active_battery` 与 `active_user` **两个生成列唯一索引**（I1/I9，本期同时兑现 B3）；变更仅来订单终态/人工核销 |
 | `swap_battery_observation` | 电池位置/状态观测流水（带 `source`/`via`/新鲜度） | 只追不改；**无权限写归属字段**（I10） |
 | `swap_battery_conflict` | 跨源观测冲突记录（O2） | `(battery_id, window_key)` 唯一 + 处理态 |
 | `iot_*`（框架层） | device/product/thing_model/session/command/shadow/outbox/telemetry 端口 | 见 `swap-protocol.md` §11 |
 
-> **MySQL 无部分唯一索引**，"某状态下唯一"用生成列技巧落 DB 约束：
-> `active_order_id VARCHAR(64) GENERATED ALWAYS AS (IF(state='ACTIVE', slot_id, NULL)) STORED` + `UNIQUE(active_order_id)`。
+> **MySQL 无部分唯一索引**（H2 亦无），"某状态下唯一"用生成列 + 唯一索引落 DB 约束：
+> `active_slot BIGINT AS (CASE WHEN resv_state = 'ACTIVE' THEN slot_id ELSE NULL END)` + `CREATE UNIQUE INDEX ... (active_slot)`。
+> **两条实测约束**（细节见 [`swap-ddl.md`](swap-ddl.md) §2）：条件表达式**不能用 MySQL 的 `IF()`**（H2 即使 `MODE=MySQL` 也不支持），
+> 且生成列**不写 `STORED` 关键字**（MySQL 默认 VIRTUAL 并允许在其上建唯一索引，H2 两边均接受）。
 > **不变式必须落在数据库约束上，不能只落在应用代码里**——代码会漏、会并发、会被绕过，约束不会。
 
 ---

@@ -99,5 +99,10 @@
   修订：协议新增 §5.4 电池身份核验与防伪（挑战应答，强/中/弱三级证据及可用边界）、§12 补二进制 codec 必逐字段过同一套 golden 样本、§13 改为“故障注入目录”（16 项语义不删）并指向独立工程文档、§14 取舍整表迁出、§15 原六项遗留逐条定案；
   FSM 新增 §4.5 电池身份与归属证明（三层归属分离 + 五级裁决表 + 跨设备观测冲突 O1..O5 + 归属变更入口收敛）、新增不变式 **I9/I10** 与三张表、**删除 §10.2“明确不做”整表**改为“边界归属”（九项逐项给里程碑与技术前提）、§11 补双端归因/身份裁决/观测冲突三层门槛、§12 分配策略定案（门槛不砍 + 3 档优先级链 + 惩罚项实现）。
   **结构性变化**：由“先云侧后设备侧”改为**双轨互为对手方同步**（M1 同期交付 L1 与 FI-01/02/04/10/13）；原登记为简化的二进制帧与设备认证增强分别升为 **M8/M9** 正式里程碑；本文 §4 的 swap 选型行已改指新总账。
+- 2026-09-29：**swap M0-3 定稿（表结构与 DDL）**——新增 `buddy/docs/swap-ddl.md` 与迁移 `V7__iot_infrastructure`（11 表）/`V8__swap_ledger`（8）/`V9__swap_order_flow`（6）/`V10__member_right`（5）/`V11__swap_menu_seed`（权限码 6000+ 段），共 30 张新表 + 换电演示种子。
+  **两路实测自证**：H2 2.2.224（`MODE=MySQL`）与 MySQL 8.0.44 按 V1→V11 全量执行均 exit 0；`mvn verify` **95 用例全绿 + JaCoCo 达标 + BUILD SUCCESS**；真库档 `MysqlConsistencyTest` 3 用例全绿（Flyway 落到 v11）；
+  MySQL 端核实 6 处 `VIRTUAL GENERATED` 生成列、56 条 CHECK、50 表；**四条负例均被拒**（站点放宽 SOC 门槛 / 同电池双 ACTIVE 绑定 / 同仓位双 ACTIVE 预占 / 同用户双在途单）+ 非法枚举被拒，**一条正例通过**（订单进终态后同用户可重建单）——只证约束会拦不够，必须同时证它能释放。
+  踩到并记录的坑：**H2 即使 `MODE=MySQL` 也不支持 `IF()`**，因此生成列表达式全部改写为 `CASE WHEN` 且不写 `STORED`（已反向修正 FSM/协议文档中的示例）；另 `CHECK` 无法跨表→“站点只能收紧门槛”必须冗余型号默认值到站点表，漂移风险已登记待 M1 一致性校验。
+  设计调整：分区 DDL 不进 Flyway（一次性迁移无法承担持续滚动），改由 M1 的 `TelemetryPartitionJob` 维护；`iot_telemetry` 主键设 `(id, occurred_at)` 提前做到分区就绪。`member_right` 提前至 V10（M2 guard 硬前置）。
 - 2026-09-29：**CI 结果核查与文档备案（用户要求）**——用 gh CLI 直连核查首次完整流水线（run 36565377941 · `225a079`）：`backend`/`frontend`/`mysql-consistency`/`e2e`/`docker` 五 job 全绿（其中 docker 为新增 job 首跑通过），唯一红为 `security-scan`——根因：`aquasecurity/trivy-action@0.28.0` 引用缺 `v` 前缀（该库 tag 为 `vX.Y.Z`，`0.28.0` ref 实测 404；修复过程见下条）。新增 `buddy/docs/ci.md`：流水线全景 / gh 查看与重跑手册 / 已知问题与修复 / 异地（服务器）能力对齐要点（不含任何凭据），README 文档索引同步。
 - 2026-09-29：**security-scan 修复闭环（用户批准）**——补 `v` 前缀（commit 159d806）后仍红，暴露第二层根因：`trivy-action@v0.28.0` 内部 pin 的 `aquasecurity/setup-trivy@v0.2.1` tag 已被上游删除（嵌套 composite 引用失效）；改升 `trivy-action@v0.36.0`（内部改 pin setup-trivy 至 commit SHA / v0.2.6，不再受删 tag 影响；6 个在用输入已核对），commit 978360b 推送后 run 36567189359 **6/6 全绿**。ci.md §3/§4.1 同步修订为最终版并推送。教训：pin 第三方 action 时，嵌套引用链的间接依赖 tag 也可能被上游删除，优先选内部以 SHA pin 依赖的版本。
