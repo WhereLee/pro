@@ -40,7 +40,7 @@
 | M0-3 | 表结构与 DDL：**已交付** `V7__iot_infrastructure`（11 表）/ `V8__swap_ledger`（8 表）/ `V9__swap_order_flow`（6 表）/ `V10__member_right`（5 表）/ `V11__swap_menu_seed`（权限码 6000+ 段），含生成列唯一约束、56 条 CHECK、分区就绪主键与扫描索引 | ✅ 定稿（见 [`swap-ddl.md`](swap-ddl.md)） |
 | M0-3b | 派生项（归 M1 实现）：`TelemetryPartitionJob`（分区滚动，仅 MySQL 生效）、阈值冗余漂移校验、`iot_msg_dedup` 过期清理、扫描 SQL 的 `EXPLAIN` 断言 | 随 M1 |
 | M0-4 | C 端会员身份域设计（第二受众：JWT audience/密钥分离、权益快照、与后台 RBAC 的边界；数据结构已由 V10 承载） | 待讨论 |
-| M0-5 | **文档自洽性契约测试** `SwapDdlContractTest`（三条断言见 `swap-ddl.md` §10） | 待实现 |
+| M0-5 | **文档自洽性契约测试** `SwapDdlContractTest`（七项断言，见 `swap-ddl.md` §10） | ✅ 已交付（首跑即抽出一处真实漂移） |
 
 **M0 验证门**：迁移表中每个 `(state, event)` 都能在 ①DDL 枚举 ②协议指令矩阵 ③模拟器故障目录 中找到落点，反向亦然；不一致即测试失败。
 > 这条测试的价值：三张纸各写各的一定时会互不认账，而这类偏差在编码期表现为"这个事件没人处理"。
@@ -174,6 +174,10 @@ M0 ──► M1 ──► M2 ──► M3 ─┬─► M4 ──► M6
 
 ## 9. 变更日志
 
+- 2026-09-29：**M0-5 交付**——`SwapDdlContractTest`（纯文件解析、不启 Spring，7 项断言）。
+  **首跑即抽出一处真实漂移**：DB 步骤态枚举含 `SKIPPED` 而 FSM 步骤态行漏声明，已反向修正文档并补齐两个状态的语义定义。
+  本块同时确认：`order_state`、`order_step.step_code/step_state`、`active_user` 在途集合、
+  `@enum` 标记与列存在性双向对齐、FSM 引用的事件/指令均在协议清单内、`@PreAuthorize` 权限码均在种子内。
 - 2026-09-29：**M0-3 定稿**——新增 `buddy/docs/swap-ddl.md`，交付 `V7`~`V11`（30 张新表 + 样例种子 + 权限菜单）。
   版本切分已修正（原写 `V7__swap_business`/`V9__member_billing` 等）：`member_right` 提前至 V10，因为它是 M2 主链路 guard 的硬前置。
   两路实测均通过：H2 2.2.224（`MODE=MySQL`）与 MySQL 8.0.44 按 V1→V11 全量执行，`mvn verify` **95 用例全绿 + JaCoCo 达标**，

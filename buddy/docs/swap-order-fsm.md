@@ -108,7 +108,9 @@
 | **S5** `WAIT_TAKE` | — | `battery_taken(offerSlot)` **且** `door_close(offerSlot)` | 60s | 未取→`ABORTING`；取了未关→继续（FI-12/13） |
 | **S6** `SETTLE` | — | 无设备动作（云内事务 + Outbox） | 30s | 重试，**不允许丢**（I3） |
 
-步骤态：`PENDING → DISPATCHED → OPEN_CONFIRMED → PHYSICS_DONE → VERIFIED / FAILED / CONFIRM_PENDING`。
+步骤态：`PENDING → DISPATCHED → OPEN_CONFIRMED → PHYSICS_DONE → VERIFIED / FAILED / CONFIRM_PENDING / SKIPPED`。
+其中 `CONFIRM_PENDING` = ACK 已到但物理事件缺失、反查未穷尽（订单层 `UNCONFIRMED` 由它投影而来）；
+`SKIPPED` = 该步骤本单不再执行（如换仓位后旧步骤作废、或站点策略免除 `BATTERY_VERIFY` 反查），**计入事件流不得静默消失**。
 步骤是**唯一被物理事件直接推进的对象**；订单态由"哪几个步骤完成"推导。
 
 ### 4.3 指令态

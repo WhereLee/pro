@@ -104,5 +104,11 @@
   MySQL 端核实 6 处 `VIRTUAL GENERATED` 生成列、56 条 CHECK、50 表；**四条负例均被拒**（站点放宽 SOC 门槛 / 同电池双 ACTIVE 绑定 / 同仓位双 ACTIVE 预占 / 同用户双在途单）+ 非法枚举被拒，**一条正例通过**（订单进终态后同用户可重建单）——只证约束会拦不够，必须同时证它能释放。
   踩到并记录的坑：**H2 即使 `MODE=MySQL` 也不支持 `IF()`**，因此生成列表达式全部改写为 `CASE WHEN` 且不写 `STORED`（已反向修正 FSM/协议文档中的示例）；另 `CHECK` 无法跨表→“站点只能收紧门槛”必须冗余型号默认值到站点表，漂移风险已登记待 M1 一致性校验。
   设计调整：分区 DDL 不进 Flyway（一次性迁移无法承担持续滚动），改由 M1 的 `TelemetryPartitionJob` 维护；`iot_telemetry` 主键设 `(id, occurred_at)` 提前做到分区就绪。`member_right` 提前至 V10（M2 guard 硬前置）。
+- 2026-09-29：**swap M0-5 契约测试交付**——新增 `src/test/java/com/lrs/buddy/contract/SwapDdlContractTest.java`（纯文件解析、不启 Spring、毫秒级，7 项断言）：
+  ① `@enum` 标记→表/列存在且与 CHECK 集合逐元素相等；② 反向：有 CHECK 枚举必有 `@enum`；③ FSM 订单态 == `order_state` DB 枚举；
+  ④ **FSM 非终态集合 == `swap_order.active_user` 生成列在途列表**（防“漏 SUSPENDED 可刷双单”与“多算终态永久无法建单”两类事故）；
+  ⑤ 步骤码/步骤态 == `swap_order_step` 两枚举；⑥ FSM 引用的 `evt:*`/`dispatch(CMD)` 均在协议清单内；⑦ 源码 `hasAuthority` 权限码 ⊆ Flyway 种子。
+  **首跑即抽出一处真实漂移**：DB 步骤态含 `SKIPPED` 而 FSM “步骤态”行漏声明——已反向修正文档并补齐 `CONFIRM_PENDING`/`SKIPPED` 两个状态的语义与“不得静默消失”约束。
+  自证：`mvn verify` **102 用例全绿**（95 + 新增 7）+ JaCoCo 达标 + BUILD SUCCESS。`swap-ddl.md` §10 与 `swap-plan.md` M0-5 同步。
 - 2026-09-29：**CI 结果核查与文档备案（用户要求）**——用 gh CLI 直连核查首次完整流水线（run 36565377941 · `225a079`）：`backend`/`frontend`/`mysql-consistency`/`e2e`/`docker` 五 job 全绿（其中 docker 为新增 job 首跑通过），唯一红为 `security-scan`——根因：`aquasecurity/trivy-action@0.28.0` 引用缺 `v` 前缀（该库 tag 为 `vX.Y.Z`，`0.28.0` ref 实测 404；修复过程见下条）。新增 `buddy/docs/ci.md`：流水线全景 / gh 查看与重跑手册 / 已知问题与修复 / 异地（服务器）能力对齐要点（不含任何凭据），README 文档索引同步。
 - 2026-09-29：**security-scan 修复闭环（用户批准）**——补 `v` 前缀（commit 159d806）后仍红，暴露第二层根因：`trivy-action@v0.28.0` 内部 pin 的 `aquasecurity/setup-trivy@v0.2.1` tag 已被上游删除（嵌套 composite 引用失效）；改升 `trivy-action@v0.36.0`（内部改 pin setup-trivy 至 commit SHA / v0.2.6，不再受删 tag 影响；6 个在用输入已核对），commit 978360b 推送后 run 36567189359 **6/6 全绿**。ci.md §3/§4.1 同步修订为最终版并推送。教训：pin 第三方 action 时，嵌套引用链的间接依赖 tag 也可能被上游删除，优先选内部以 SHA pin 依赖的版本。
