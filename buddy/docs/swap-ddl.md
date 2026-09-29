@@ -15,8 +15,9 @@
 | `V9__swap_order_flow` | 主线：order / order_step / order_event / event_dedup / compensation / discrepancy | 6 | 依赖 V8 的资产 ID 语义 |
 | `V10__member_right` | C 端：member_user / member_identity / right_plan / right_account / right_transaction | 5 | **必须在 M2 之前**：`AUTHORIZED` 的 guard 就是"权益有效 + 无在途单" |
 | `V11__swap_menu_seed` | 菜单与权限码（6000+ 段） | — | 权限码要跟控制器一起提交，先建结构后接页面 |
+| `V12__member_auth` | C 端身份域：member_session / member_sms_code / member_realname，补 `member_user` 注销与实名列，新增实名审核/会话管理权限码 | 3 | **M0-4 追加**。不回改 V10：它已随上一次提交进入各环境 `flyway_schema_history` 并带校验和，“只增不改”对本次新写的迁移同样生效（见 [`swap-member-auth.md`](swap-member-auth.md)） |
 
-后续版本已预留：`V12` 告警与工单（M5）、`V13` 支付与对账（M4）、`V14` 分账与提现（M6）。
+后续版本：`V13` 告警与工单（M5）、`V14` 支付与对账（M4）、`V15` 分账与提现（M6）。
 **V11 刻意不预支 M3~M6 的菜单**：预支会产生"菜单存在但接口不存在"的假可用状态。
 
 ---
@@ -187,28 +188,35 @@ D-2 与 D-1 这两条最容易被无意改掉（写了不会立刻报错），�
 
 | 项 | 结果 |
 |---|---|
-| H2 2.2.224（`MODE=MySQL`）按 V1→V11 顺序全量执行 | `exit=0` |
+| H2 2.2.224（`MODE=MySQL`）按 V1→V12 顺序全量执行 | `exit=0` |
 | MySQL 8.0.44（utf8mb4）同一套脚本全量执行 | `exit=0` |
-| 生成列创建数量 | 6 处 `VIRTUAL GENERATED`（与 §3 一致）+ `shedlock.locked_at` 框架自带 |
-| CHECK 约束注册数 | 56 |
-| 表总数 | 50 |
-| 4 条负例（站点放宽门槛 / 双 ACTIVE 绑定 / 双 ACTIVE 预占 / 同用户双在途单 / 非法枚举值） | 全部被拒绝 `exit=1` |
-| 1 条正例（终态释放后同用户可再建单） | 通过 `exit=0` |
+| 生成列 | **9 处 `VIRTUAL GENERATED`**（V7~V9 六处 + V12 三处）。另有 2 处 `DEFAULT_GENERATED` 属 `shedlock.locked_at` 与 `flyway_schema_history.installed_on`，为框架/基础设施自带，不计入本设计 |
+| CHECK 约束注册数 | 65 |
+| 业务域表数（`iot_*` / `swap_*` / `member_*` / `outbox_event`） | 33（库内共 54 表） |
+| 约束负例（V7~V9：站点放宽门槛 / 双 ACTIVE 绑定 / 双 ACTIVE 预占 / 同用户双在途单 / 非法枚举值） | 全部被拒绝 |
+| 约束正例（V7~V9：终态释放后同用户可再建单） | 通过 |
+| 约束用例（V12：8 项，含 4 项正例，其中一项与生成列随 UPDATE 重算） | 全部符合预期（详 [`swap-member-auth.md`](swap-member-auth.md) §3） |
+| 应用级真库档 | `MysqlConsistencyTest`(3) + `MySQLConcurrencyTest`(2) 全绿，Flyway 落到 v12 |
 | `iot_telemetry` 主键含 `occurred_at` | 确认（分区就绪） |
+| **环境事件** | 本轮 `mvn verify` 一度因**本机 Redis 服务处于 Stopped** 而在 `SysUserApiTest.repeat_submit_blocked` 失败（30s 连接超时 → `code:500` 而非 `1404`）；属环境前置而非代码回归，已重启 Redis 并重跑至全绿。**结论：怀疑测试坏掉前，先确认 Redis 在跑** |
 
 ---
 
 ## 12. 遗留
 
-1. `M0-4`：C 端会员令牌与鉴权域（独立 audience/密钥、权益快照接口形态）——影响 `member_*` 是否需要额外的令牌/授权表。
-2. 押金与授信免押的账户结构属 M4（V13 一起定），V10 刻意不建，避免把未定的资金规则固化成 schema。
-3. `iot_thing_model` 的 `spec_json` 结构细化（单位、上下限、可写性、告警映射）在 M1 实现物模型校验器时一并定版。
-4. 分区保留天数与归档策略的默认值（当前按 30 天设计），需在 M7 生产配置时按真实写入量级复核。
+1. ~~`M0-4`：C 端会员令牌与鉴权域~~ → **已定稿**（`swap-member-auth.md` + `V12`）。
+2. 押金与授信免押的账户结构属 M4（`V14` 一起定），V10/V12 刻意不建，避免把未定的资金规则固化成 schema。
+3. 号码回收冷却期、多租户下“同手机号可否跨运营商各建一会员”（影响 `member_user.phone_hash` 唯一是否改为 `(tenant_id, phone_hash)`）——**必须在 M6 开租户前定死**，因为改唯一索引需清重复数据。详 `swap-member-auth.md` §8。
+4. `iot_thing_model` 的 `spec_json` 结构细化（单位、上下限、可写性、告警映射）在 M1 实现物模型校验器时一并定版。
+5. 分区保留天数与归档策略的默认值（当前按 30 天设计），需在 M7 生产配置时按真实写入量级复核。
 
 ---
 
 ## 13. 变更日志
 
+- 2026-09-29：**M0-4 追加 `V12__member_auth`**（`member_session` / `member_sms_code` / `member_realname`）——新增 3 条生成列不变式（会话族同设备类型互斥、同手机号同用途仅一条待验证验证码、一个会员仅一条在审实名申请）；
+  本文版本表与 §11 实测数据同步至 V12（业务域 33 表、生成列 9 处、CHECK 65 条）；
+  记录一个实例：**“只增不改”对刚写的迁移也成立**——V10 已随上一次提交进入各环境 `flyway_schema_history` 并带校验和，所以会员域新增表只能开 V12 而不能回改 V10。
 - 2026-09-29：**M0-5 契约测试交付**——§10 从“三条计划”改为**已实现的七项断言**（`SwapDdlContractTest`）；
   首跑抽出的真实漂移：`SKIPPED` 在 DB 枚举内而 FSM 步骤态行漏声明（已反向修正文档）；
   新约定：解析失败必须断言为“解析已失效”而非静默通过，因为**解析器自己是坏的比测试不跑更危险**。

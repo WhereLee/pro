@@ -110,5 +110,14 @@
   ⑤ 步骤码/步骤态 == `swap_order_step` 两枚举；⑥ FSM 引用的 `evt:*`/`dispatch(CMD)` 均在协议清单内；⑦ 源码 `hasAuthority` 权限码 ⊆ Flyway 种子。
   **首跑即抽出一处真实漂移**：DB 步骤态含 `SKIPPED` 而 FSM “步骤态”行漏声明——已反向修正文档并补齐 `CONFIRM_PENDING`/`SKIPPED` 两个状态的语义与“不得静默消失”约束。
   自证：`mvn verify` **102 用例全绿**（95 + 新增 7）+ JaCoCo 达标 + BUILD SUCCESS。`swap-ddl.md` §10 与 `swap-plan.md` M0-5 同步。
+- 2026-09-29：**swap M0-4 定稿（C 端会员身份域）→ M0 收口**——新增 `buddy/docs/swap-member-auth.md` 与 `V12__member_auth`（3 表 + 3 条生成列不变式 + `member_user` 补列 + 3 个权限码）。
+  要点：两域分离（骑手无权限码、只有权益）；**串域必须 401 而非 403**（403 = 已进入后台权限判定路径，是可断言的串域前兆）；
+  独立密钥（缺失即启动失败）+ `typ` 分派 + 第三条过滤链（并显式警惕“每条链自装过滤器”这一框架历史缺陷的重发点）；
+  access 2h + refresh 30 天一次性轮换与**复用检测即整族撤销**；多设备类型并存、同类型互斥（DB 生成列）；
+  实名强制（申请表为真相、`member_user` 为投影）、验证码只存哈希且同手机号同用途仅一条 PENDING（防轰炸与多码并存）、注销双前置（跨表校验收不了 CHECK，已诚实标注为服务层守卫）；
+  C 端 `displayState` 五态契约（内部状态名不下发、`UNKNOWN` 不显示失败）——协议 §15 最后一条遗留就此闭环。
+  自证：H2 V1→V12 全量 `exit=0`、`mvn verify` **102 全绿 + JaCoCo 达标**、真库档 5 用例全绿（落到 v12）、
+  MySQL 上 8 项 V12 约束用例全部符合预期（含 4 项**正向对照**）；库内生成列 9 处、CHECK 65 条、业务域 33 表。
+  环境事件（已写入 `swap-ddl.md` §11）：`mvn verify` 一度因**本机 Redis 服务处于 Stopped** 导致 `SysUserApiTest.repeat_submit_blocked` 失败（30s 超时→`code:500`），属环境前置而非回归；因无权限启服务，改用 `redis-server.exe` 拉起后重跑至全绿。
 - 2026-09-29：**CI 结果核查与文档备案（用户要求）**——用 gh CLI 直连核查首次完整流水线（run 36565377941 · `225a079`）：`backend`/`frontend`/`mysql-consistency`/`e2e`/`docker` 五 job 全绿（其中 docker 为新增 job 首跑通过），唯一红为 `security-scan`——根因：`aquasecurity/trivy-action@0.28.0` 引用缺 `v` 前缀（该库 tag 为 `vX.Y.Z`，`0.28.0` ref 实测 404；修复过程见下条）。新增 `buddy/docs/ci.md`：流水线全景 / gh 查看与重跑手册 / 已知问题与修复 / 异地（服务器）能力对齐要点（不含任何凭据），README 文档索引同步。
 - 2026-09-29：**security-scan 修复闭环（用户批准）**——补 `v` 前缀（commit 159d806）后仍红，暴露第二层根因：`trivy-action@v0.28.0` 内部 pin 的 `aquasecurity/setup-trivy@v0.2.1` tag 已被上游删除（嵌套 composite 引用失效）；改升 `trivy-action@v0.36.0`（内部改 pin setup-trivy 至 commit SHA / v0.2.6，不再受删 tag 影响；6 个在用输入已核对），commit 978360b 推送后 run 36567189359 **6/6 全绿**。ci.md §3/§4.1 同步修订为最终版并推送。教训：pin 第三方 action 时，嵌套引用链的间接依赖 tag 也可能被上游删除，优先选内部以 SHA pin 依赖的版本。

@@ -39,7 +39,7 @@
 | M0-2b | **电池身份与归属证明规则 + 跨设备可观测性冲突裁决** | 本轮补（FSM §4.5），M0-2 遗留真缺口 |
 | M0-3 | 表结构与 DDL：**已交付** `V7__iot_infrastructure`（11 表）/ `V8__swap_ledger`（8 表）/ `V9__swap_order_flow`（6 表）/ `V10__member_right`（5 表）/ `V11__swap_menu_seed`（权限码 6000+ 段），含生成列唯一约束、56 条 CHECK、分区就绪主键与扫描索引 | ✅ 定稿（见 [`swap-ddl.md`](swap-ddl.md)） |
 | M0-3b | 派生项（归 M1 实现）：`TelemetryPartitionJob`（分区滚动，仅 MySQL 生效）、阈值冗余漂移校验、`iot_msg_dedup` 过期清理、扫描 SQL 的 `EXPLAIN` 断言 | 随 M1 |
-| M0-4 | C 端会员身份域设计（第二受众：JWT audience/密钥分离、权益快照、与后台 RBAC 的边界；数据结构已由 V10 承载） | 待讨论 |
+| M0-4 | C 端会员身份域设计 → **已定稿** `buddy/docs/swap-member-auth.md` + `V12__member_auth`（3 表）：两域令牌隔离、独立密钥与 `typ` 分派、第三条过滤链、refresh 轮换与复用检测、实名强制、注销双前置、C 端 `displayState` 契约 | ✅ 定稿 |
 | M0-5 | **文档自洽性契约测试** `SwapDdlContractTest`（七项断言，见 `swap-ddl.md` §10） | ✅ 已交付（首跑即抽出一处真实漂移） |
 
 **M0 验证门**：迁移表中每个 `(state, event)` 都能在 ①DDL 枚举 ②协议指令矩阵 ③模拟器故障目录 中找到落点，反向亦然；不一致即测试失败。
@@ -167,13 +167,19 @@ M0 ──► M1 ──► M2 ──► M3 ─┬─► M4 ──► M6
 ## 8. 交付物清单
 
 - **代码**：`buddy`（`framework/` 增量 + `biz/swap` + 权限/菜单种子迁移）、`buddy-sim`（独立产物）、`buddy-ui`（后台页 + C 端 H5）、`protocol/`（双端共享数据资产）。
-- **文档**：本文 + `swap-protocol.md` + `swap-order-fsm.md` + `swap-simulator.md` + `swap-ddl.md`，并同步 `architecture.md` 与 README 能力清单。
+- **文档**：本文 + `swap-protocol.md` + `swap-order-fsm.md` + `swap-simulator.md` + `swap-ddl.md` + `swap-member-auth.md`，并同步 `architecture.md` 与 README 能力清单。
 - **质量**：单元 / 集成 / 协议契约 / 并发 / 混沌 / 故障矩阵 / E2E / 压测 / 安全测试 + CI 门禁 + 可观测仪表盘与压测报告。
 
 ---
 
 ## 9. 变更日志
 
+- 2026-09-29：**M0 收口（M0-4 定稿）**——新增 `buddy/docs/swap-member-auth.md` 与 `V12__member_auth`（`member_session` / `member_sms_code` / `member_realname`，3 张表 + 3 条生成列不变式 + `member_user` 补列 + 3 个权限码）。
+  核心约束：“**串域必须返回 401 而不是 403**”——403 意味着已进入后台权限判定路径（串域前兆），401 意味着在分派阶段就被拒；该区分可直接断言，因此成为可自证的安全约束而非口头承诺。
+  令牌：独立密钥（缺失即启动失败）+ access 2h / refresh 30 天一次性轮换 + **复用检测即整族撤销**；多设备类型并存、同类型互斥（DB 生成列）。
+  业务口径（用户拍板）：**实名强制**、**refresh 30 天 + 同设备类型互斥**、**注销需无在途且无 ACTIVE 绑定（权益作废不退款）**。
+  MySQL 8.0.44 上跑完 8 项约束用例（含 4 项**正向对照**，其中一项专门验证生成列随 UPDATE 重算）全部符合预期；同时修正 V11 预留版本号（V12 已被身份域占用，后移为 V13/V14/V15）。
+  环境事件：本轮 `mvn verify` 一度因**本机 Redis 服务处于 Stopped** 而在 `SysUserApiTest.repeat_submit_blocked` 失败（30s 连接超时 → code 500 而非 1404），属环境前置而非代码回归；已重启 Redis 并重跑。
 - 2026-09-29：**M0-5 交付**——`SwapDdlContractTest`（纯文件解析、不启 Spring，7 项断言）。
   **首跑即抽出一处真实漂移**：DB 步骤态枚举含 `SKIPPED` 而 FSM 步骤态行漏声明，已反向修正文档并补齐两个状态的语义定义。
   本块同时确认：`order_state`、`order_step.step_code/step_state`、`active_user` 在途集合、
