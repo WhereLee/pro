@@ -11,8 +11,12 @@ node_modules/
 _old_node_modules/
 
 # --- runtime data & logs ---
-uploads/
+uploads*/
 *.log
+.logs/
+
+# --- 压测运行产物（JMeter/k6）---
+*.jtl
 
 # --- legacy standalone project at repo root (pending removal) ---
 # NOTE: leading slash is critical — "/src" ONLY ignores repo-root src/,
@@ -35,3 +39,6 @@ Thumbs.db
 # --- Playwright 运行产物 ---
 test-results/
 playwright-report/
+
+# --- 个人求职/叙事材料（勿入公开仓库） ---
+/buddy-upgrade-narrative.md

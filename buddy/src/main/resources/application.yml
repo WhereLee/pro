@@ -8,6 +8,16 @@ spring:
     active: dev
   application:
     name: buddy
+  # ========== Flyway 数据库版本化迁移 ==========
+  # 取代原 spring.sql.init(schema.sql/data.sql)：版本化、可重放、生产级 schema 演进。
+  # 脚本在 classpath:db/migration（V1 建表基线、V2 种子），后续版本只增不改。
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    encoding: UTF-8
+    table: flyway_schema_history
+    # 对已有数据的库首次接入打基线，避免"非空库无历史"报错；空库(dev/test)正常全量迁移
+    baseline-on-migrate: true
   jackson:
     time-zone: Asia/Shanghai
     default-property-inclusion: non_null
@@ -34,7 +44,7 @@ spring:
 # ========== MyBatis-Plus ==========
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
-  type-aliases-package: com.lrs.buddy.modules.**.entity
+  type-aliases-package: com.lrs.buddy.**.entity
   global-config:
     db-config:
       id-type: ASSIGN_ID
@@ -55,6 +65,16 @@ buddy:
     secret: ${BUDDY_JWT_SECRET:buddy-framework-default-secret-key-please-change-me-32bytes}
     # 令牌有效期，默认 8 小时
     expire-seconds: ${BUDDY_JWT_EXPIRE:28800}
+  tenant:
+    # 多租户开关：默认关闭=单租户（框架能力，新项目按需开启）。
+    # 开启后 MyBatis-Plus 租户拦截器自动为非忽略表追加 tenant_id 过滤；表结构已由 V6 预留 tenant_id 列。
+    enabled: ${BUDDY_TENANT_ENABLED:false}
+    column: tenant_id
+    default-tenant-id: 1
+    ignore-tables:
+      - sys_menu
+      - flyway_schema_history
+      - shedlock
   init:
     # 首次启动时自动创建的管理员账号；已存在同名账号则跳过
     admin-username: ${BUDDY_ADMIN_USERNAME:admin}

@@ -12,7 +12,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * 都依赖定时任务，框架层面统一开启，业务模块无需重复声明。
  */
 @EnableScheduling
-@MapperScan("com.lrs.buddy.modules.**.mapper")
+@MapperScan("com.lrs.buddy.**.mapper")
 @SpringBootApplication
 public class BuddyApplication {
 

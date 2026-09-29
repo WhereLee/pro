@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.lrs.buddy.modules.sys.mapper.SysUserMapper">
+<mapper namespace="com.lrs.buddy.framework.modules.sys.mapper.SysUserMapper">
 
     <!--
       说明：MyBatis-Plus 的逻辑删除只对 BaseMapper 内置方法自动生效，
@@ -9,11 +9,11 @@
     -->
 
     <sql id="Base_Column_List">
-        id, username, password, nickname, email, phone, avatar, dept_id, status,
+        id, username, password, nickname, email, phone, avatar, dept_id, status, tenant_id,
         create_by, create_time, update_by, update_time, del_flag, version, remark
     </sql>
 
-    <select id="selectByUsername" resultType="com.lrs.buddy.modules.sys.entity.SysUser">
+    <select id="selectByUsername" resultType="com.lrs.buddy.framework.modules.sys.entity.SysUser">
         SELECT
         <include refid="Base_Column_List"/>
         FROM sys_user
@@ -27,7 +27,7 @@
       内容只来自当前用户角色的配置，不含任何前端输入，
       因此可以用 ${} 直接拼接（#{} 会把片段当成字符串加引号，反而无法生效）。
     -->
-    <select id="selectUserPage" resultType="com.lrs.buddy.modules.sys.model.vo.SysUserVO">
+    <select id="selectUserPage" resultType="com.lrs.buddy.framework.modules.sys.model.vo.SysUserVO">
         SELECT
             u.id, u.username, u.nickname, u.email, u.phone, u.avatar,
             u.dept_id AS deptId, u.status, u.create_time AS createTime, u.remark,

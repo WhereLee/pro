@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.lrs.buddy.modules.sys.mapper.SysMenuMapper">
+<mapper namespace="com.lrs.buddy.framework.modules.sys.mapper.SysMenuMapper">
 
     <!--
       列带表别名 m. ：联表时 sys_role_menu 同样存在 id 列，不加前缀会产生列名歧义。
@@ -16,7 +16,7 @@
       超级管理员直接返回全部菜单，普通用户通过 用户→角色→菜单 三表关联。
       用同一个 SQL + 动态分支而不是写两条，避免两条语句逻辑漂移。
     -->
-    <select id="selectMenusByUserId" resultType="com.lrs.buddy.modules.sys.entity.SysMenu">
+    <select id="selectMenusByUserId" resultType="com.lrs.buddy.framework.modules.sys.entity.SysMenu">
         SELECT DISTINCT
         <include refid="Base_Column_List"/>
         FROM sys_menu m

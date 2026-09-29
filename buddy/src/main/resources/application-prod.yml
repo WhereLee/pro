@@ -1,0 +1,88 @@
+# ============================================================
+# 生产环境配置（profile: prod）
+#
+# 原则：所有密钥/连接串外置为环境变量，敏感项【无默认值】——缺失即启动失败，
+# 杜绝弱默认密钥/口令被带上生产。用法：
+#   java -jar buddy.jar --spring.profiles.active=prod
+# 必需环境变量：BUDDY_DB_HOST BUDDY_DB_USER BUDDY_DB_PASSWORD BUDDY_REDIS_HOST
+#               BUDDY_JWT_SECRET(>=32字节) BUDDY_ADMIN_PASSWORD
+# ============================================================
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 注意：JDBC 的 characterEncoding 用 UTF-8（不是 utf8mb4）；utf8mb4 是库/表字符集，由建库参数决定
+    url: jdbc:mysql://${BUDDY_DB_HOST}:${BUDDY_DB_PORT:3306}/${BUDDY_DB_NAME:buddy}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
+    username: ${BUDDY_DB_USER}
+    password: ${BUDDY_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${BUDDY_DB_POOL_MAX:20}
+      minimum-idle: ${BUDDY_DB_POOL_MIN:5}
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1740000
+      pool-name: BuddyHikariPool
+  data:
+    redis:
+      host: ${BUDDY_REDIS_HOST}
+      port: ${BUDDY_REDIS_PORT:6379}
+      password: ${BUDDY_REDIS_PASSWORD:}
+      database: ${BUDDY_REDIS_DB:0}
+      timeout: 5s
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    # 生产：迁移前校验一致性，且禁止 clean（防误清库）
+    validate-on-migrate: true
+    clean-disabled: true
+
+# 关闭 SQL 打印（dev 用 StdOutImpl，生产噪音大且可能泄露数据）
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+buddy:
+  jwt:
+    # 生产必须注入强密钥（HS256 要求 >=32 字节）；无默认值 → 未注入即启动失败
+    secret: ${BUDDY_JWT_SECRET}
+    expire-seconds: ${BUDDY_JWT_EXPIRE:28800}
+  init:
+    admin-username: ${BUDDY_ADMIN_USERNAME:admin}
+    # 生产管理员初始口令必须注入；首登后应立即修改
+    admin-password: ${BUDDY_ADMIN_PASSWORD}
+  file:
+    path: ${BUDDY_FILE_PATH:/app/uploads}
+    max-size: ${BUDDY_FILE_MAX_SIZE:20971520}
+  tenant:
+    enabled: ${BUDDY_TENANT_ENABLED:false}
+
+# 生产关闭接口文档，缩小攻击面
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+# Actuator 收敛：仅健康/信息/指标；health 详情不对外
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  charset:
+    console: UTF-8
+    file: UTF-8
+  level:
+    root: info
+    com.lrs.buddy: info
+  file:
+    name: ${BUDDY_LOG_FILE:/app/logs/buddy.log}
+  logback:
+    rollingpolicy:
+      max-file-size: 50MB
+      max-history: 14

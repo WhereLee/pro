@@ -10,11 +10,12 @@ import { join } from 'node:path'
  *   - 前端按钮 hasPerm('xxx') 用了后端从没定义的权限码 → 该按钮永远被隐藏/接口永远 403；
  *   - 后端改了/删了某权限码，前端仍在引用 → 这里立即变红。
  *
- * 后端权威集合来自 sql/data.sql 里 sys_menu 的 perms 字段（它既驱动 @PreAuthorize，
- * 又通过 /auth/info 下发给前端 hasPermission），所以两边以它对齐。
+ * 后端权威集合来自 db/migration 下所有 Flyway 脚本里 sys_menu 的 perms 字段（框架种子 V2、
+ * barrier 样例 V5…；它既驱动 @PreAuthorize，又通过 /auth/info 下发给前端 hasPermission），两边以它对齐。
  */
 const FRONTEND_SRC = fileURLToPath(new URL('./', import.meta.url))
-const DATA_SQL = fileURLToPath(new URL('../../buddy/src/main/resources/sql/data.sql', import.meta.url))
+// 权限码分散在多个 Flyway 迁移（框架种子 V2、barrier 样例 V5…），扫描整个 db/migration 目录聚合
+const MIGRATION_DIR = fileURLToPath(new URL('../../buddy/src/main/resources/db/migration', import.meta.url))
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -47,16 +48,20 @@ function usedPerms(): Set<string> {
   return found
 }
 
-// 后端定义的权限码全集：data.sql 里的 module:resource:action 三元组
+// 后端定义的权限码全集：所有 Flyway 迁移里的 module:resource:action 三元组
 function definedPerms(): Set<string> {
-  const sql = readFileSync(DATA_SQL, 'utf-8')
   const set = new Set<string>()
   // 兼容两段(notice:save)与三段(sys:user:list)权限码；要求首段以字母开头，
   // 避免把 'HH:mm:ss' 之类时间值误当成权限码
   const re = /'([a-zA-Z][\w]*(?::[\w]+)+)'/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(sql)) !== null) {
-    set.add(m[1])
+  for (const file of readdirSync(MIGRATION_DIR)) {
+    if (!/^V\d+.*\.sql$/.test(file)) continue
+    const sql = readFileSync(join(MIGRATION_DIR, file), 'utf-8')
+    let m: RegExpExecArray | null
+    re.lastIndex = 0
+    while ((m = re.exec(sql)) !== null) {
+      set.add(m[1])
+    }
   }
   return set
 }

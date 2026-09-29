@@ -6,15 +6,7 @@ spring:
     url: jdbc:h2:mem:buddytest;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
     username: sa
     password: ''
-  sql:
-    init:
-      mode: always
-      schema-locations: classpath:sql/schema.sql
-      data-locations: classpath:sql/data.sql
-      # 用 UTF-8 读取脚本：否则 GBK 平台会把无 BOM 的 UTF-8 脚本按平台码解码，
-      # 菜单名等中文种子数据入库即乱码（这是本项目踩过的坑，测试环境同样要显式声明）
-      encoding: UTF-8
-      continue-on-error: false
+  # 测试库初始化由 Flyway 负责（application.yml 的 spring.flyway + db/migration，UTF-8）。
   # ---------------- Redis（@RepeatSubmit / 在线台账用；CI service 与本地均在 6379） ----------------
   data:
     redis:
@@ -27,6 +19,11 @@ spring:
 mybatis-plus:
   configuration:
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+# 关闭升降杆样例的心跳调度：测试里手动驱动引擎保证确定性，不让 @Scheduled 每 5s 干扰
+barrier:
+  scheduler:
+    enabled: false
 
 logging:
   level:

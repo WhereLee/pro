@@ -26,6 +26,7 @@
         <oshi.version>6.9.1</oshi.version>
         <redisson.version>3.52.0</redisson.version>
         <hutool.version>5.8.47</hutool.version>
+        <shedlock.version>6.3.1</shedlock.version>
         <!-- 默认排除需外部 MySQL 的 @Tag("mysql") 用例；CI 的 mysql-consistency job 用 -Dsurefire.excludedGroups= 反选运行 -->
         <surefire.excludedGroups>mysql</surefire.excludedGroups>
     </properties>
@@ -83,6 +84,18 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- ========== 数据库版本化迁移（Flyway）========== -->
+        <!-- flyway-core 只含框架 + 内建库(H2)；MySQL 支持自 Flyway 9+ 拆到独立模块 flyway-mysql，
+             缺它真库会报 Unsupported Database: MySQL 8.0（H2 开发档天然掩盖）。版本由父 POM 管理。 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
 
         <!-- ========== Redis ========== -->
         <dependency>
@@ -100,6 +113,18 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-quartz</artifactId>
+        </dependency>
+        <!-- ShedLock：多实例部署时保证 @Scheduled 心跳在集群内单例执行（锁记录落 shedlock 表，与业务同库，无需额外中间件）。
+             biz.barrier 样例的 reconcile 心跳用到；JDBC provider 不依赖 Redis。 -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>${shedlock.version}</version>
         </dependency>
 
         <!-- ========== JWT ========== -->

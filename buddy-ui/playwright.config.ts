@@ -7,6 +7,8 @@ export default defineConfig({
   timeout: 60000,
   expect: { timeout: 15000 },
   fullyParallel: false,
+  // 全部用例共用 admin 账号，且登出会使 Redis 在线会话失效；单 worker 串行，避免并发登录/登出互相踢下线
+  workers: 1,
   reporter: [['list']],
   use: {
     baseURL: 'http://localhost:3000',

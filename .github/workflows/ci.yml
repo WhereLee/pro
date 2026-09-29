@@ -127,8 +127,8 @@ jobs:
           java-version: '17'
           cache: maven
 
-      - name: Run MySQL-tagged integration tests
-        run: mvn -B -ntp test -Dtest=MysqlConsistencyTest -Dsurefire.excludedGroups=
+      - name: Run MySQL-tagged integration tests (一致性 + barrier 并发 CAS)
+        run: mvn -B -ntp test -Dtest=MysqlConsistencyTest,MySQLConcurrencyTest -Dsurefire.excludedGroups=
 
   # 前端 E2E：启动后端 jar(H2/dev) + redis，Playwright 跑真实浏览器主链路（登录/动态路由/刷新/登出）。
   e2e:
@@ -185,3 +185,57 @@ jobs:
       - name: Run E2E
         working-directory: buddy-ui
         run: npm run test:e2e
+
+  # 容器镜像构建验证（不推送）：确保两个 Dockerfile 可成功构建，产物可供部署。
+  docker:
+    name: Docker images (build)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./buddy
+          push: false
+          load: true
+          tags: buddy-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./buddy-ui
+          push: false
+          load: true
+          tags: buddy-ui:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 安全扫描：硬门禁=依赖漏洞(CRITICAL、已修的不算)，secret 扫描作非阻断报表。
+  # 本仓库合法包含 dev 固定口令（test/E2E/k6/README 里的 Admin@123456、application.yml 里 change-me 默认、
+  # .env.example 占位），fs 扫描按字符串匹配会命中→直接红。真实密钥泄露防护应走 gitleaks pre-commit，
+  # 而非拉平与真泄密一同扫到。trivy secret 扫描作为参考输出（exit-code: 0），不阻断流水线。
+  security-scan:
+    name: Security scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy vuln scan (CRITICAL · hard gate)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Trivy secret scan (advisory · non-blocking)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          exit-code: '0'

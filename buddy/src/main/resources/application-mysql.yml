@@ -1,7 +1,7 @@
 spring:
   # ---------------- 数据源：MySQL ----------------
   # 使用方式：--spring.profiles.active=mysql
-  # 首次使用前需执行 sql/schema.sql 建表（或开启下面的 spring.sql.init）
+  # 首次启动由 Flyway 自动建表+种子（db/migration）；无需手工执行 SQL
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://${BUDDY_DB_HOST:localhost}:${BUDDY_DB_PORT:3306}/${BUDDY_DB_NAME:buddy}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
@@ -13,16 +13,9 @@ spring:
       connection-timeout: 30000
       idle-timeout: 600000
       max-lifetime: 1800000
-  sql:
-    init:
-      # 首次部署可设为 always 自动建表；已有数据后请改为 never，避免重复执行报错
-      mode: never
-      schema-locations: classpath:sql/schema.sql
-      data-locations: classpath:sql/data.sql
-      # 用 UTF-8 读取建表/数据脚本（与 dev 对齐）；否则 GBK 平台开 always 会复现中文乱码。
-      # 另：schema.sql 为兼容 H2 省略了 CHARSET，MySQL 库须显式建为 utf8mb4，例如
-      #   CREATE DATABASE buddy CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-      encoding: UTF-8
+  # 建表/种子由 Flyway 负责（db/migration）。注意：迁移脚本为兼容 H2 省略了 CHARSET，
+  # MySQL 库须显式建为 utf8mb4，例如：
+  #   CREATE DATABASE buddy CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 
   data:
     redis:

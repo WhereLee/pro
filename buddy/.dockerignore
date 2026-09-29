@@ -1,0 +1,9 @@
+target/
+uploads/
+*.log
+.git/
+.idea/
+*.iml
+docs/
+load/*.jtl
+load/*.log

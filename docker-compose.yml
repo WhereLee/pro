@@ -1,0 +1,84 @@
+# ============================================================
+# buddy  monorepo 生产编排：MySQL 8 + Redis 7 + 后端(prod) + 前端(nginx)
+#
+# 用法：
+#   1) cp .env.example .env  并填入强密钥（BUDDY_JWT_SECRET / BUDDY_ADMIN_PASSWORD / MYSQL_ROOT_PASSWORD）
+#   2) docker compose up -d --build
+#   3) 前端 http://localhost:3000 ，后端健康 http://localhost:8200/api/actuator/health
+#
+# 敏感项用 ${VAR:?err} 强制要求注入，缺失即报错，杜绝弱默认上生产。
+# ============================================================
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${BUDDY_DB_NAME:-buddy}
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./buddy
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      BUDDY_DB_HOST: mysql
+      BUDDY_DB_PORT: "3306"
+      BUDDY_DB_NAME: ${BUDDY_DB_NAME:-buddy}
+      BUDDY_DB_USER: root
+      BUDDY_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      BUDDY_REDIS_HOST: redis
+      BUDDY_REDIS_PORT: "6379"
+      BUDDY_JWT_SECRET: ${BUDDY_JWT_SECRET:?set a >=32-byte BUDDY_JWT_SECRET in .env}
+      BUDDY_ADMIN_USERNAME: ${BUDDY_ADMIN_USERNAME:-admin}
+      BUDDY_ADMIN_PASSWORD: ${BUDDY_ADMIN_PASSWORD:?set BUDDY_ADMIN_PASSWORD in .env}
+      BUDDY_TENANT_ENABLED: ${BUDDY_TENANT_ENABLED:-false}
+      TZ: Asia/Shanghai
+    ports:
+      - "8200:8200"
+    volumes:
+      - backend-uploads:/app/uploads
+      - backend-logs:/app/logs
+
+  frontend:
+    build: ./buddy-ui
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  mysql-data:
+  redis-data:
+  backend-uploads:
+  backend-logs:

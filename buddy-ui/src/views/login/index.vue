@@ -36,7 +36,8 @@
         </el-button>
       </el-form>
 
-      <div class="login-tip">
+      <!-- 默认凭据提示仅开发模式显示；生产构建（import.meta.env.DEV=false）不渲染，避免页面泄露种子口令 -->
+      <div v-if="isDev" class="login-tip">
         <el-tag type="info" size="small">默认账号：admin</el-tag>
         <el-tag type="info" size="small">默认密码：Admin@123456</el-tag>
       </div>
@@ -58,9 +59,14 @@ const userStore = useUserStore()
 const formRef = ref<FormInstance>()
 const loading = ref(false)
 
+// Vite 内置常量：dev 为 true、生产构建为 false
+const isDev = import.meta.env.DEV
+
+// 仅开发模式预填种子管理员凭据便于试用；生产构建下登录表单为空，不暴露默认口令
+// （生产的 admin 口令由环境变量 BUDDY_ADMIN_PASSWORD 注入，与本默认值无关）
 const form = reactive({
-  username: 'admin',
-  password: 'Admin@123456'
+  username: isDev ? 'admin' : '',
+  password: isDev ? 'Admin@123456' : ''
 })
 
 const rules: FormRules = {

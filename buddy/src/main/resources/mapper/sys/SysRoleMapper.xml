@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.lrs.buddy.modules.sys.mapper.SysRoleMapper">
+<mapper namespace="com.lrs.buddy.framework.modules.sys.mapper.SysRoleMapper">
 
     <!--
       联表查询时列名必须带表别名：sys_user_role 也有 id 列，
@@ -12,7 +12,7 @@
         r.create_by, r.create_time, r.update_by, r.update_time, r.del_flag, r.version, r.remark
     </sql>
 
-    <select id="selectRolesByUserId" resultType="com.lrs.buddy.modules.sys.entity.SysRole">
+    <select id="selectRolesByUserId" resultType="com.lrs.buddy.framework.modules.sys.entity.SysRole">
         SELECT
         <include refid="Base_Column_List"/>
         FROM sys_role r
