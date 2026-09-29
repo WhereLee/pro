@@ -30,6 +30,7 @@ uploads*/
 .idea/
 *.iml
 .vscode/
+.reasonix/
 .DS_Store
 Thumbs.db
 

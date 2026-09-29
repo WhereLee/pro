@@ -48,6 +48,7 @@ sx/
 文档：
 - [`buddy/docs/architecture.md`](buddy/docs/architecture.md) — 框架架构与横切能力（安全、多租户、Flyway、审计、可观测、并发上下文传播）
 - [`buddy/docs/barrier-sample.md`](buddy/docs/barrier-sample.md) — barrier 样例：业务本质、领域模型、三层并发、接口与边界
+- [`buddy/docs/swap-protocol.md`](buddy/docs/swap-protocol.md) — ★ 在建业务 `biz/swap`（换电柜）设备接入与通信协议规范（M0-1 定稿：主题/信封/指令矩阵/上行校验链/会话隔离/安全/模拟器规范/取舍登记）
 - [`buddy/docs/ROADMAP.md`](buddy/docs/ROADMAP.md) — 框架与样例的合并/开发顺序计划、决策依据、变更日志、简化项登记
 - [`buddy/docs/ci.md`](buddy/docs/ci.md) — CI 流水线全景、gh 查看/重跑操作手册、已知问题与修复指引
 
