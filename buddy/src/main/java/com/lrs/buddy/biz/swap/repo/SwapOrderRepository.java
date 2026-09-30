@@ -1,6 +1,7 @@
 package com.lrs.buddy.biz.swap.repo;
 
 import com.lrs.buddy.biz.swap.alloc.SlotAllocator;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -429,6 +430,121 @@ public class SwapOrderRepository {
                 rs.getTimestamp("last_detected_at") == null ? null : rs.getTimestamp("last_detected_at").toLocalDateTime(),
                 firstNonBlank(rs.getString("fault_code"), rs.getString("batt_fault")),
                 rs.getInt("disabled_flag"));
+    }
+
+    // ---------------- 反查与超时驱动需要的读写 ----------------
+
+    public record DoorProbe(String doorState, String lockState, LocalDateTime lastDetectedAt) {
+    }
+
+    public record ShadowRow(String reportedJson, LocalDateTime syncedAt) {
+    }
+
+    /**
+     * 事件到达时回写仓门磁投影。
+     *
+     * 不写就会有一个双重代价：一是不变式 I7（台账与事实一致）无从成立，
+     * 二是超时时的反查只能看到一个永远为 CLOSED 的投影，把"门其实开了"误判成"门没开"而重发开仓。
+     */
+    public void setSlotDoor(long cabinetId, int slotNo, String doorState, String lockState, LocalDateTime now) {
+        jdbc.update("UPDATE swap_slot SET door_state = ?, lock_state = ?, last_detected_at = ?, update_time = ?, "
+                        + "version = version + 1 WHERE cabinet_id = ? AND slot_no = ? AND del_flag = 0",
+                doorState, lockState, Timestamp.valueOf(now), Timestamp.valueOf(now), cabinetId, slotNo);
+    }
+
+    /** 读台账投影的门磁作为反查的第一个来源（它能告诉我们要的是"云端已知道什么"，不是新事实）。 */
+    public DoorProbe probeSlotDoor(long cabinetId, int slotNo) {
+        List<DoorProbe> rows = jdbc.query("SELECT door_state, lock_state, last_detected_at FROM swap_slot "
+                        + "WHERE cabinet_id = ? AND slot_no = ? AND del_flag = 0",
+                (rs, i) -> new DoorProbe(rs.getString("door_state"), rs.getString("lock_state"),
+                        rs.getTimestamp("last_detected_at") == null ? null
+                                : rs.getTimestamp("last_detected_at").toLocalDateTime()),
+                cabinetId, slotNo);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * 已下发次数：直接数 iot_command 而不是在步骤表加一个 attempts 列。
+     * 指令表已经是事实源，再加一个计数列就是第二份真相——两者早晚会不一致。
+     */
+    public int countDispatched(long orderId, int stepNo) {
+        Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM iot_command WHERE biz_type = 'SWAP_ORDER' "
+                + "AND biz_id = ? AND step_no = ?", Integer.class, orderId, stepNo);
+        return n == null ? 0 : n;
+    }
+
+    /** 扫到期的在途订单（走 idx_ord_scan (order_state, deadline_ts)）。 */
+    public List<OrderRow> scanDueOrders(long nowTs, int limit) {
+        return jdbc.query("SELECT id, order_no, user_id, site_id, cabinet_id, return_slot_no, offer_slot_no, "
+                        + "return_battery_id, offer_battery_id, order_state, right_state, tenant_id FROM swap_order "
+                        + "WHERE active_user IS NOT NULL AND deadline_ts IS NOT NULL AND deadline_ts <= ? "
+                        + "ORDER BY deadline_ts LIMIT " + Math.max(1, Math.min(limit, 200)),
+                (rs, i) -> new OrderRow(rs.getLong("id"), rs.getString("order_no"), rs.getLong("user_id"),
+                        rs.getLong("site_id"), rs.getLong("cabinet_id"), nullableInt(rs, "return_slot_no"),
+                        nullableInt(rs, "offer_slot_no"),
+                        rs.getObject("return_battery_id") == null ? null : rs.getLong("return_battery_id"),
+                        rs.getObject("offer_battery_id") == null ? null : rs.getLong("offer_battery_id"),
+                        rs.getString("order_state"), rs.getString("right_state"), rs.getLong("tenant_id")),
+                nowTs);
+    }
+
+    /** 影子上报态写入（只由 QUERY_STATUS 应答驱动）。 */
+    public void upsertShadowReported(long deviceRowId, String reportedJson, LocalDateTime now, long tenantId) {
+        Integer exists = jdbc.queryForObject("SELECT COUNT(*) FROM iot_shadow WHERE device_row_id = ? AND del_flag = 0",
+                Integer.class, deviceRowId);
+        if (exists == null || exists == 0) {
+            jdbc.update("INSERT INTO iot_shadow (id, device_row_id, reported_json, desired_ver, reported_ver, "
+                            + "sync_state, synced_at, create_time, update_time, version, del_flag, tenant_id) "
+                            + "VALUES (?,?,?, 0, 1, 'PENDING', ?,?, ?, 0, 0, ?)",
+                    IdWorker.getId(), deviceRowId, reportedJson, Timestamp.valueOf(now), Timestamp.valueOf(now),
+                    Timestamp.valueOf(now), tenantId);
+            return;
+        }
+        jdbc.update("UPDATE iot_shadow SET reported_json = ?, reported_ver = reported_ver + 1, synced_at = ?, "
+                + "update_time = ?, version = version + 1 WHERE device_row_id = ? AND del_flag = 0",
+                reportedJson, Timestamp.valueOf(now), Timestamp.valueOf(now), deviceRowId);
+    }
+
+    public ShadowRow shadowReported(long deviceRowId) {
+        List<ShadowRow> rows = jdbc.query("SELECT reported_json, synced_at FROM iot_shadow WHERE device_row_id = ? "
+                        + "AND del_flag = 0", (rs, i) -> new ShadowRow(rs.getString("reported_json"),
+                rs.getTimestamp("synced_at") == null ? null : rs.getTimestamp("synced_at").toLocalDateTime()),
+                deviceRowId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public void markBatteryPendingPickup(long batteryId, String reason, LocalDateTime now) {
+        jdbc.update("UPDATE swap_battery SET battery_state = 'PENDING_PICKUP', isolated_reason = ?, update_time = ?, "
+                + "version = version + 1 WHERE id = ?", reason, Timestamp.valueOf(now), batteryId);
+    }
+
+    public void markSelfResumeUsed(long orderId) {
+        jdbc.update("UPDATE swap_order SET self_resume_used = 1, update_time = CURRENT_TIMESTAMP WHERE id = ?", orderId);
+    }
+
+    /** B2：用户自助恢复只能用一次，第二次就必须转人工。 */
+    public boolean selfResumeUsed(long orderId) {
+        Integer used = jdbc.queryForObject("SELECT self_resume_used FROM swap_order WHERE id = ?", Integer.class, orderId);
+        return used != null && used == 1;
+    }
+
+    public String lockSlotForSafety(long cabinetId, int slotNo, String reason) {
+        jdbc.update("UPDATE swap_slot SET slot_state = 'ISOLATED', fault_code = ?, update_time = CURRENT_TIMESTAMP "
+                + "WHERE cabinet_id = ? AND slot_no = ?", reason, cabinetId, slotNo);
+        return reason;
+    }
+
+    /** 设备行 id（影子与反查以设备为键）。 */
+    public Long deviceRowOfCabinet(long cabinetId) {
+        List<Long> ids = jdbc.queryForList("SELECT device_row_id FROM swap_cabinet WHERE id = ?", Long.class, cabinetId);
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    public Map<String, Object> commandByCode(long orderId, String cmdCode) {
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT cmd_id, cmd_state, reply_json, session_id "
+                + "FROM iot_command WHERE biz_type = 'SWAP_ORDER' AND biz_id = ? AND cmd_code = ? ORDER BY id DESC "
+                + "LIMIT 1", orderId, cmdCode);
+        return rows.isEmpty() ? null : rows.get(0);
     }
 
     private static String firstNonBlank(String a, String b) {

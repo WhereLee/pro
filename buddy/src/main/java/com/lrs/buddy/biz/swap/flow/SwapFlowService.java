@@ -112,11 +112,13 @@ public class SwapFlowService {
     private void onDoorOpen(SwapOrderRepository.OrderRow order, Integer slotNo, Envelope envelope,
                              LocalDateTime now) {
         if (order.state().equals(OrderState.RETURNING.name()) && eq(slotNo, order.returnSlotNo())) {
+            repo.setSlotDoor(order.cabinetId(), slotNo, "OPEN", "UNLOCKED", now);
             advanceStep(order.id(), StepCode.OPEN_RETURN.order(), StepState.DISPATCHED.name(),
                     StepState.OPEN_CONFIRMED.name(), null, envelope.sessionId(), null);
             fireOrder(order.id(), OrderState.RETURNING, OrderEvent.EVT_DOOR_OPEN_RETURN, "door_open@return",
                     slotNo, null, envelope.msgId());
         } else if (order.state().equals(OrderState.OFFERING.name()) && eq(slotNo, order.offerSlotNo())) {
+            repo.setSlotDoor(order.cabinetId(), slotNo, "OPEN", "UNLOCKED", now);
             advanceStep(order.id(), StepCode.UNLOCK_OFFER.order(), StepState.DISPATCHED.name(),
                     StepState.OPEN_CONFIRMED.name(), null, envelope.sessionId(), null);
             fireOrder(order.id(), OrderState.OFFERING, OrderEvent.EVT_DOOR_OPEN_OFFER, "door_open@offer",
@@ -159,6 +161,8 @@ public class SwapFlowService {
                 return;
             }
             String code = insertedBattery(step2);
+            // 门关了就把台账投影改掉：它是后续反查的第一个来源，不改就永远是旧值
+            repo.setSlotDoor(order.cabinetId(), slotNo, "CLOSED", "LOCKED", now);
             advanceStep(order.id(), StepCode.WAIT_INSERT.order(), StepState.OPEN_CONFIRMED.name(),
                     StepState.PHYSICS_DONE.name(), null, null, null);
             fireOrder(order.id(), OrderState.RETURNING, OrderEvent.EVT_DOOR_CLOSE_RETURN, "door_close@return",
@@ -173,6 +177,7 @@ public class SwapFlowService {
             }
             advanceStep(order.id(), StepCode.WAIT_TAKE.order(), StepState.OPEN_CONFIRMED.name(),
                     StepState.PHYSICS_DONE.name(), null, null, null);
+            repo.setSlotDoor(order.cabinetId(), slotNo, "CLOSED", "LOCKED", now);
             fireOrder(order.id(), OrderState.OFFERING, OrderEvent.EVT_DOOR_CLOSE_OFFER, "door_close@offer",
                     slotNo, null, null);
             settle(order, now);
@@ -339,6 +344,134 @@ public class SwapFlowService {
         }
     }
 
+    // ---------------- 超时驱动需要的入口（只暴露收敛动作，不暴露内部推进） ----------------
+
+    /** 反查得到的事实驱动迁移：与事件入口同一套合法性判定与 CAS，不开第二份推进逻辑。 */
+    @Transactional
+    public void fireDeadline(long orderId, OrderState from, OrderEvent event, String eventType) {
+        fireOrder(orderId, from, event, eventType, null, null, null);
+    }
+
+    @Transactional
+    public void advanceReturnDoorOpen(long orderId) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        repo.setSlotDoor(order.cabinetId(), order.returnSlotNo(), "OPEN", "UNLOCKED", LocalDateTime.now());
+        advanceStep(orderId, StepCode.OPEN_RETURN.order(), StepState.DISPATCHED.name(),
+                StepState.OPEN_CONFIRMED.name(), null, null, null);
+    }
+
+    @Transactional
+    public void advanceOfferDoorOpen(long orderId) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        repo.setSlotDoor(order.cabinetId(), order.offerSlotNo(), "OPEN", "UNLOCKED", LocalDateTime.now());
+        advanceStep(orderId, StepCode.UNLOCK_OFFER.order(), StepState.DISPATCHED.name(),
+                StepState.OPEN_CONFIRMED.name(), null, null, null);
+    }
+
+    /**
+     * 把步骤标成"不可断定"。
+     *
+     * 不这么处理就只有两个选项：当成成功（可能门根本没开）或当成失败（可能已开门只是没上报）。
+     * 两者都比"挂起等人/等反查"贵得多，而且都会谎改事实。
+     */
+    @Transactional
+    public void markConfirmPending(long orderId, int stepNo) {
+        LocalDateTime now = LocalDateTime.now();
+        if (repo.advanceStep(orderId, stepNo, StepState.DISPATCHED.name(), StepState.CONFIRM_PENDING.name(),
+                null, null, null, now)) {
+            return;
+        }
+        repo.advanceStep(orderId, stepNo, StepState.OPEN_CONFIRMED.name(), StepState.CONFIRM_PENDING.name(),
+                null, null, null, now);
+    }
+
+    /** 重发开归还仓：仅反查确认"没开"时调用（§5.3 #18）。 */
+    @Transactional
+    public void redispatchReturnSlot(long orderId) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        redispatch(order, StepCode.OPEN_RETURN, order.returnSlotNo(), "OPEN_SLOT");
+    }
+
+    /** 重发开取电仓：S4 无副作用（没开就是没开），所以重发安全（§5.4 #27）。 */
+    @Transactional
+    public void redispatchOfferSlot(long orderId) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        redispatch(order, StepCode.UNLOCK_OFFER, order.offerSlotNo(), "UNLOCK_SLOT");
+    }
+
+    private void redispatch(SwapOrderRepository.OrderRow order, StepCode code, Integer slotNo, String cmdCode) {
+        if (slotNo == null) {
+            return;
+        }
+        // 重发前必须先把旧的在途指令置 SUPERSEDED：`uk_icmd_active` 保证同一步骤只有一条在途指令，
+        // 不先置就会被唯一索引拒掉——本行曾因为这个“重发”实际从没发出去过，异常被上层 catch 吞了。
+        commands.supersedeInFlight(BIZ_TYPE, order.id(), code.order());
+        String cmdId = dispatch(order, code, slotNo, cmdCode).cmdId();
+        advanceStep(order.id(), code.order(), StepState.DISPATCHED.name(), StepState.DISPATCHED.name(),
+                cmdId, null, null);
+    }
+
+    /** §5.3 #26：自动裁决不可达 → 人工。禁自动资金动作（包括禁自动退权益）。 */
+    @Transactional
+    public void deadlineUnconfirmed(long orderId) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        fireOrder(orderId, OrderState.valueOf(order.state()), OrderEvent.DEADLINE_UNCONFIRMED,
+                "deadline_unconfirmed", null, null, null);
+    }
+
+    /** §5.3 #24：挂起到期无人处理 → ABORTING → 补偿 → ABORTED（I8：先补完再落终态）。 */
+    @Transactional
+    public void suspendTimeout(long orderId) {
+        LocalDateTime now = LocalDateTime.now();
+        fireOrder(orderId, OrderState.SUSPENDED, OrderEvent.DEADLINE_SUSPENDED, "deadline_suspended",
+                null, null, null);
+        SwapOrderRepository.OrderRow fresh = requireOrder(orderId);
+        compensate(fresh, "SUSPENDED_TIMEOUT", now);
+        fireOrder(orderId, OrderState.ABORTING, OrderEvent.ABORT_DONE, "abort_done", null, null, null);
+    }
+
+    /**
+     * 用户声明“我把门关上了”（§5.3 #22/#23，B2）。
+     *
+     * 用户声明是最低可信度来源：**它只能触发反查，不能直接把订单推过 RETURNED**。
+     * 否则现场会出现“为了拿回押金谎称已关门”的路子，而柜子里其实还开着门、电池躺在里面。
+     *
+     * 反查不通过、或者已经用过一次自助恢复（self_resume_used）时：锁仓 + 转人工，
+     * 订单状态**故意不变**（登记为自迁移）—— 因为“没人确认”这件事本身就是要被看到的。
+     */
+    @Transactional
+    public String declareClosed(long orderId, long userId) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        if (!OrderState.SUSPENDED.name().equals(order.state())) {
+            throw new IllegalStateException("只有挂起中的订单能声明恢复，当前：" + order.state());
+        }
+        if (!java.util.Objects.equals(order.userId(), userId)) {
+            throw new IllegalStateException("只能由下单人本人声明恢复");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        String inserted = insertedBattery(repo.step(orderId, StepCode.WAIT_INSERT.order()));
+        SwapOrderRepository.DoorProbe probe = repo.probeSlotDoor(order.cabinetId(), order.returnSlotNo());
+        boolean verified = probe != null && "CLOSED".equals(probe.doorState()) && inserted != null
+                && !repo.selfResumeUsed(orderId);
+        if (verified) {
+            repo.markSelfResumeUsed(orderId);
+            advanceStep(orderId, StepCode.WAIT_INSERT.order(), StepState.OPEN_CONFIRMED.name(),
+                    StepState.PHYSICS_DONE.name(), null, null, null);
+            fireOrder(orderId, OrderState.SUSPENDED, OrderEvent.USER_DECLARE_CLOSED_VERIFIED,
+                    "user_declare_closed_verified", order.returnSlotNo(), null, null);
+            Long returnBattery = batteryIdOf(inserted);
+            repo.bindSlotsToOrder(orderId, returnBattery, order.offerBatteryId());
+            verifyAndOffer(order, returnBattery, now);
+            return "RESUMED";
+        }
+        repo.lockSlotForSafety(order.cabinetId(), order.returnSlotNo(), "USER_DECLARE_UNVERIFIED");
+        fireOrder(orderId, OrderState.SUSPENDED, OrderEvent.USER_DECLARE_CLOSED_UNVERIFIED,
+                "user_declare_closed_unverified", order.returnSlotNo(), null, null);
+        log.info("声明未通过反查，锁仓转人工：order={}, probe={}", order.orderNo(),
+                probe == null ? "null" : probe.doorState());
+        return "NEED_MANUAL";
+    }
+
     /**
      * 下发指令。副作用指令 retryMax=0（协议 §4.1 铁律一：不自动重试）。
      *
@@ -368,6 +501,10 @@ public class SwapFlowService {
         if (StepState.PENDING.name().equals(fromState) && StepState.OPEN_CONFIRMED.name().equals(toState)) {
             // 无指令步骤的第一个事实（S2/S5），不能走 EVT_DOOR_OPEN
             return SwapStepFsm.Event.EVT_FACT_ARRIVED;
+        }
+        if (StepState.DISPATCHED.name().equals(fromState) && StepState.DISPATCHED.name().equals(toState)) {
+            // 重发：目标态与源态相同，只按目标态映射会错配成 DISPATCHED 事件而被判非法
+            return SwapStepFsm.Event.RE_DISPATCHED;
         }
         return switch (toState) {
             case "DISPATCHED" -> SwapStepFsm.Event.DISPATCHED;

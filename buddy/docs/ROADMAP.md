@@ -180,6 +180,18 @@
   症状是测试挂住而不是报错）—— 同一个坑两次在不同代码里重现，证明它值得写进文档而不只是注释。
   自证：`buddy-sim` **20 用例全绿**（原 15 + 新 5）；`buddy` **120 用例全绿 + JaCoCo 达标**。
   仍未做：两个独立进程的跨进程联跑（属 M3 混沌/场景 DSL 范畴），以及设备注册接口取密钥（M2）。
+- 2026-09-30：**M2 第 6 批（A 块）：超时与反查驱动 + 自助恢复（B2）**——
+  `SwapTimeoutDriver`（ShedLock 扫 deadline，按 §5.3/§5.4 分岔）、`SwapShadowBridge`
+  （`QUERY_STATUS` 应答写 `iot_shadow.reported_json`，不放进框架层是为了不让 framework 反过来认识业务指令码）、
+  `SwapFlowService.declareClosed`（用户声明只能触发反查，不能直接推过 RETURNED；self_resume_used 消费一次）。
+  反查边界写清楚：无硬件时它只能读“云端已有事实”（投影/影子）且必须新鲜，**不得把“不知道”当成“没开”**。
+  测试抓出三个真 bug（全部当场修）：重发前未 SUPERSEDE 导致“重发”实机发不出去；
+  步骤事件映射只看目标态导致重发被误判非法；`CREATED` 指令超时被推成 `TIMEOUT`（应为 `EXPIRED`）。
+  前两个的成因同一个：**异常被上层 catch 吞掉，功能默默失效而不报错**——教训是超时驱动必须
+  用“结果断言”而不是“没报错就算对”。
+  环境事件：本机重启后 Redis 服务未自启，导致全量套件 19 个用例红（设备认证/幂等/actuator 同时挂）；
+  按已记录的做法拉起 `redis-server.exe` 后恢复——先看环境再怀疑代码。
+  自证：`mvn verify` **191 用例全绿 + JaCoCo 达标**（新增 `SwapTimeoutTest` 8 例）。
 - 2026-09-30：**M2 第 5 批（B5 开头）：柜机分段锁 + 真并发实测**——
   `CabinetLocks`（64 段取模）加到建单入口，并把 `create()` 从 `@Transactional` 改为
   “**先拿锁→ TransactionTemplate 开事务**”：锁在方法内释放而事务在其后提交，两者错开就等于锁白加

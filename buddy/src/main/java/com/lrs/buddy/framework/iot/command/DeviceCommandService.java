@@ -204,19 +204,23 @@ public class DeviceCommandService {
         if (row == null || row.state().isTerminal() || row.state() == CommandState.TIMEOUT) {
             return;
         }
-        if (!commandDao.transition(row.id(), row.state(), CommandState.TIMEOUT, LocalDateTime.now(),
+        // CREATED = 根本没送达设备（离线、抢不到连接），它的超时语义是"指令过期"而不是"送达了没回"。
+        // 两者必须分开：EXPIRED 代表零物理动作（上层可走 REJECTED / 重下单），
+        // TIMEOUT 代表"可能已经执行"（必须反查）。混掉就再也分不出这两种处置。
+        CommandState target = row.state() == CommandState.CREATED ? CommandState.EXPIRED : CommandState.TIMEOUT;
+        if (!commandDao.transition(row.id(), row.state(), target, LocalDateTime.now(),
                 null, null, "NO_REPLY", null)) {
             return;
         }
         inFlight.remove(cmdId);
-        registry.counter("cmd.timeout", "cmd", row.cmdCode()).increment();
-        CommandRecord record = toRecord(row, CommandState.TIMEOUT);
+        registry.counter("cmd.timeout", "cmd", row.cmdCode(), "to", target.name()).increment();
+        CommandRecord record = toRecord(row, target);
         if (row.retryLeft() != null && row.retryLeft() > 0 && row.state() == CommandState.DISPATCHED) {
             commandDao.decrementRetry(row.id());
             log.debug("指令超时且仍有重试额度：cmdId={}", cmdId);
         }
         // 超时后不自动重发副作用指令（协议 §4.1 铁律一），只回调让上层决定
-        notify(record, CommandState.TIMEOUT);
+        notify(record, target);
     }
 
     public List<CommandDao.Row> scanDue(int limit) {
