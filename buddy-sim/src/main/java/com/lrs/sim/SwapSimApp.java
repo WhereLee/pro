@@ -26,7 +26,16 @@ public final class SwapSimApp {
 
     public static void main(String[] args) throws Exception {
         Options options = Options.parse(args);
+        if (options.listScenarios) {
+            com.lrs.sim.scenario.Scenario.listAvailable().forEach(p -> System.out.println(p));
+            return;
+        }
+        if (options.scenario != null) {
+            System.exit(runScenario(options));
+            return;
+        }
         List<DeviceLink> links = new ArrayList<>();
+        java.util.Map<String, DeviceLink> byId = new java.util.LinkedHashMap<>();
         for (int i = 1; i <= options.count; i++) {
             // --device 是精确设备号（跨进程联跑用一个已开通的设备）；--prefix 是批量压测形态。
             // 两者必须分开：把前缀当设备号用，拼出来的 ID 与台账里的永远对不上，
@@ -47,10 +56,25 @@ public final class SwapSimApp {
             }
             link.connect();
             links.add(link);
+            byId.put(deviceId, link);
             System.out.println("[sim] 已连接 " + deviceId + " sessionId=" + link.sessionId()
                     + (options.autoSwap ? " autoSwap=on" : ""));
         }
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> links.forEach(DeviceLink::close)));
+        // 控制面只听 127.0.0.1：这个进程能伪造报文，开在对外接口上等于发布一个攻击工具
+        SimControlServer control = null;
+        if (options.controlPort > 0) {
+            control = new SimControlServer(options.controlPort, byId);
+            control.start();
+            System.out.println("[sim] 控制面 http://127.0.0.1:" + control.port()
+                    + "/status （devices=" + byId.size() + "，多设备时必须带 ?device=）");
+        }
+        final SimControlServer controlRef = control;
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (controlRef != null) {
+                controlRef.close();
+            }
+            links.forEach(DeviceLink::close);
+        }));
         long deadline = System.currentTimeMillis() + options.runSeconds * 1000L;
         while (System.currentTimeMillis() < deadline) {
             for (DeviceLink link : links) {
@@ -65,10 +89,53 @@ public final class SwapSimApp {
         links.forEach(DeviceLink::close);
     }
 
+    /**
+     * 场景模式：跑一份场景文件，逐行报结果，退出码 0/1。
+     *
+     * 为什么不让它常驻：CI 要的是"这个场景现在过不过"，常驻就得有人判超时；
+     * 而失败时必须把**每一步的期望与实际**打到 stdout，只回一句"failed"的脚本等于没跑。
+     */
+    private static int runScenario(Options options) throws Exception {
+        com.lrs.sim.scenario.Scenario scenario = com.lrs.sim.scenario.Scenario.readAny(options.scenario);
+        long seed = scenario.seed();
+        String deviceId = options.deviceId != null ? options.deviceId : options.prefix + "0001";
+        CabinetDevice cabinet = new CabinetDevice(deviceId, options.slotCount, 30.0);
+        if (options.offerBattery != null && options.offerSlot > 0) {
+            cabinet.insert(options.offerSlot, options.offerBattery, 98, 27.0);
+        }
+        DeviceLink device = new DeviceLink(options.host, options.port, options.productKey, deviceId,
+                options.masterSecret, cabinet, new FaultPolicy(seed));
+        SimCloudDriver cloud = new SimCloudDriver(options.host, options.port, options.productKey, deviceId,
+                options.masterSecret);
+        cloud.connect();
+        try {
+            System.out.println("[scenario] " + scenario.name() + " seed=" + seed + "（场景内的 seed 覆盖进程参数）");
+            System.out.println("[scenario] " + scenario.description());
+            com.lrs.sim.scenario.ScenarioRunner runner = new com.lrs.sim.scenario.ScenarioRunner(device, cloud);
+            int failed = 0;
+            for (com.lrs.sim.scenario.ScenarioRunner.StepResult step : runner.run(scenario)) {
+                System.out.printf("  [%s] #%02d %-16s %s%n", step.ok() ? "PASS" : "FAIL", step.index(),
+                        step.doWhat(), step.detail());
+                if (!step.ok()) {
+                    failed++;
+                }
+            }
+            System.out.println("[scenario] " + scenario.name() + " 结果："
+                    + (failed == 0 ? "全部通过" : failed + " 步失败")
+                    + "（设备计数 收=" + device.commandsReceived() + " 应=" + device.repliesSent()
+                    + " 事件=" + device.eventsSent() + " 拒=" + device.rejectedInbound() + "）");
+            return failed == 0 ? 0 : 1;
+        } finally {
+            cloud.close();
+            device.close();
+        }
+    }
+
     record Options(String host, int port, String productKey, String prefix, String deviceId, String masterSecret,
                    int count,
                    int slotCount, long seed, int runSeconds, boolean autoSwap, String oldBattery, int oldSoc,
-                   String offerBattery, int offerSlot, long swapDelayMs) {
+                   String offerBattery, int offerSlot, long swapDelayMs, int controlPort, String scenario,
+                   boolean listScenarios) {
 
         static Options parse(String[] args) {
             String host = "127.0.0.1";
@@ -87,6 +154,9 @@ public final class SwapSimApp {
             String offerBattery = null;
             int offerSlot = 0;
             long swapDelayMs = 1500L;
+            int controlPort = 0;
+            String scenario = null;
+            boolean listScenarios = false;
             // 边界必须是 args.length：原来写成 length-1 会让**末位参数永远读不到**，
             // 于是 `... --auto-swap` 写在最后时静默失效（症状是“模拟器不自动动作”，难查）。
             for (int i = 0; i < args.length; i++) {
@@ -107,13 +177,17 @@ public final class SwapSimApp {
                     case "--offer-battery" -> offerBattery = args[++i];
                     case "--offer-slot" -> offerSlot = Integer.parseInt(args[++i]);
                     case "--swap-delay-ms" -> swapDelayMs = Long.parseLong(args[++i]);
+                    case "--control-port" -> controlPort = Integer.parseInt(args[++i]);
+                    case "--scenario" -> scenario = args[++i];
+                    case "--list-scenarios" -> listScenarios = true;
                     default -> {
                         // 未知参数忽略，便于脚本向前兼容
                     }
                 }
             }
             return new Options(host, port, productKey, prefix, deviceId, secret, count, slotCount, seed, runSeconds,
-                    autoSwap, oldBattery, oldSoc, offerBattery, offerSlot, swapDelayMs);
+                    autoSwap, oldBattery, oldSoc, offerBattery, offerSlot, swapDelayMs, controlPort, scenario,
+                    listScenarios);
         }
     }
 }

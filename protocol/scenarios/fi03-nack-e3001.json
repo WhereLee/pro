@@ -1,0 +1,13 @@
+{
+  "name": "fi03-nack-e3001",
+  "seed": 42,
+  "description": "FI-03：应答带硬件类失败码 E3001（锁卡住）。设备必须显式回失败码而不是静默，且门不能真的开——E3* 族的处置权在云侧（锁仓+工单），但前提是把失败如实报上去。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "NACK_WITH_CODE", "cmdCode": "OPEN_SLOT", "errorCode": "E3001"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 1}, "ttl": 30},
+    {"do": "wait", "ms": 300},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "E3001", "absentEvents": ["door_open"], "faultFired": "nack:OPEN_SLOT=E3001"},
+    {"do": "log", "message": "失败码已回且门未开"}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "fi08-bad-sign",
+  "seed": 42,
+  "description": "FI-08：错签指令。设备必须回 E1001 且不执行；注意这条断言的是'门没开'，不是'报错了'——错签被放行是安全事故。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "sendBadSign", "cmd": "OPEN_SLOT", "data": {"slotNo": 8}, "ttl": 30},
+    {"do": "assert", "anyReplyCode": "E1001", "absentEvents": ["door_open"], "rejectedInboundAtLeast": 1},
+    {"do": "log", "message": "E1001 已回且门未开"}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "fi12-not-taken-then-close",
+  "seed": 42,
+  "description": "FI-12：弹仓后用户没取，门却关上了。设备侧形状是'没有 battery_taken、有 door_close'，电池仍在仓里——云侧因此不能扣权益，也不能把新电池记成用户持有。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "NOT_TAKEN_THEN_CLOSE"},
+    {"do": "send", "cmd": "UNLOCK_SLOT", "data": {"slotNo": 6}, "ttl": 30},
+    {"do": "assert", "cmd": "UNLOCK_SLOT", "replyCode": "OK", "waitEvent": "door_open"},
+    {"do": "action", "action": "take", "slotNo": 6, "batteryCode": "BAT-FULL-6", "soc": 100},
+    {"do": "wait", "ms": 300},
+    {"do": "assert", "events": ["door_close"], "absentEvents": ["battery_taken"], "faultFired": "closeWithoutTake:6"},
+    {"do": "log", "message": "关门事实已上报而无取走事实：扣减的前置条件（拿到）不成立"}
+  ]
+}

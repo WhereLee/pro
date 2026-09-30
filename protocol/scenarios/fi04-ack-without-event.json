@@ -1,0 +1,13 @@
+{
+  "name": "fi04-ack-without-event",
+  "seed": 42,
+  "description": "FI-04：ACK 成功但物理事件永不上报（动作发生了，只是没说）。这条最难被实现成假绿：如果注入实现顺手把'不执行'当成'不上报'，云侧的反查路径就永远测不到。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "SUPPRESS_EVENT", "cmdCode": "OPEN_SLOT"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 3}, "ttl": 30},
+    {"do": "wait", "ms": 400},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "absentEvents": ["door_open"], "faultFired": "suppressEvent:door_open:3"},
+    {"do": "log", "message": "有 ACK 无事实：云侧只能靠反查/影子判定，不能因为没事件就断言门没开"}
+  ]
+}

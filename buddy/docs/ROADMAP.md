@@ -81,8 +81,27 @@
 | 2026-09-30 | M2 · 跨进程联跑 | 两进程联跑时柜侧上行事件全部被云侧丢弃，订单卡在 RETURNING。已排除：设备接入与鉴权、指令下发（柜侧确认收到并执行）、Broker 启动、ACL 归属判定 | ①提升 `framework.iot`/`biz.swap` 到 DEBUG 复跑 ②查内部客户端订阅 ③柜侧打完整堆栈 ④给 `onPublish`/`handle()`/事件入口加插桩后复跑 | 无（未简化）——四个根因全部定位并修复，联跑已进 CI 成为门禁 job | **已解决（2026-09-30）**，四个真缺陷全部只有跨进程才能暴露：①`InboundRouter` 按报文自报的 sessionId 判迟到，而该值**云侧从未下发给设备**（协议 L23 写的“CONNECT 时签发”根本没实现）→ 会话身份改为以连接为权威、入站盖章；②事件消费**未按订单串行**，柜机 1ms 内连发 battery_detected + door_close 被 ingest 线程池并发处理，后一条在前一条提交前读步骤→判定“无投入事实”后静默返回，单永久卡在 RETURNING（新增 `OrderEventLocks`，先拿锁再开事务）；③`TAKEN` 后到的 `door_close@offer` 无分支处理（分支条件写死 `state==OFFERING`）→ 补 late-close 分支，先落事实再结算；④`ACKED` 指令被兑底扫描反复推 `TIMEOUT`（非法迁移）→ 每轮刷一条 ERROR，改为跳过 + `cmd.timeout.skipped` 指标。另：脚本里“步骤收口”的断言一开头写错了（把 S1/S4 的终态当成应当 VERIFIED，而它们的终态就是 OPEN_CONFIRMED），已改成“无步骤仍停在等待中”。 |
 | 2026-09-30 | M1 · 本地 Broker 选型 | 目标：本地/CI 用可嵌入纯 Java Broker 跑通 MQTT 5 接入。实测：IotTransportTest 连上 CONNECT 阶段即失败——Moquette 0.17 对 MQTT 5 CONNECT 回的 CONNACK 无法被标准 v5 客户端（HiveMQ MQTT Client）解码，报 `MqttDecodeException: Exception while decoding CONNACK: wrong reason code`；排除自身认证因素后（已把内部客户端口令拆为 `InternalClientSecrets` 单独实现并校验 `cleanStart=true`）仍复现 | 先试 Moquette 0.18/0.19（仓库不存在该版本）、再排除会话缓存与云侧认证路径差异 | **暂定 `buddy.iot.enabled=false` + `IotTransportTest` 标 `@Disabled` 并写明原因**；接入层改为 **Vert.x MQTT Server**（纯 Java、可嵌入、Apache-2.0、v5 支持完整），完成后去掉注解并把默认值改回 true | **已解决（2026-09-30）**：接入层换为 **Vert.x MQTT Server**，`IotTransportTest` 5 个用例全部跑绿（真 TCP + 真 Broker + 真 H2），`buddy.iot.enabled` 默认值已恢复 true、测试档统一关闭 |
 | 2026-10-01 | M3 阶段 2 · 模拟器控制面 | 计划把“最小 HTTP 控制面（`--control-port`）”列在阶段 0.2，但阶段 0 的跨进程联跑用 `--auto-swap` 定长动作（门开后自动投入/取走）已能跑成一单，控制面当时没有消耗方 | 按计划先做阶段 0 并验证门（联跑连跑两次 exit=0），再回头补控制面 | **未简化能力，只改交付顺序**：控制面（`/status`、`/fault`、`/action`、`/send`）随阶段 2 的 FI 矩阵与混沌一起交付，因为那时它才有真实的驱动者 | 阶段 0 验收不依赖它；代价是跨进程调试目前仍需靠 `--auto-swap` 的参数组合而不是运行时下单 |
+| 2026-10-01 | M3 阶段 2 · 注入记录不落盘 | 控制面 `/status` 的 `faultFired` 只在进程内存里；长跑归因时要回答“这台柜今天被注入过什么”无法从盘上取 | 用 JDK 内置 HttpServer 先交付能力本体（先供 FI 矩阵与混沌用），未引日志库 | **部分实现**：注入记录不写文件也不入库，仅随 `/status` 返回；归因报告需要时必须补上落盘（不能拿“日志里翻一翻”当留痕） | 当前 FI 矩阵与混沌都在同进程内读 `/status`，够用；跨进程长跑的归因报告会缺这一块 |
+| 2026-10-01 | M3 阶段 2 · 控制面无鉴权 | `SimControlServer` 能伪造报文/错签/重放/重连，属攻击工具形态 | 只能靠绑定面限制 | **只绑 127.0.0.1且仅本机/CI 使用，不做 token 鉴权**；一旦需要对外暴露必须先加 token | 本机使不上鉴权；代价是不得把模拟器控制面放到共享主机上 |
+| 2026-10-01 | M3 阶段 2 · 云侧 FI 四维断言覆盖面 | 计划要求每条 FI 都做四维断言；同 JVM 内能确定性驱动云侧入口的只有事件匹配类分支 | 先看 test profile 无 Broker 时 startReturn 会拒（“指令必须真 DISPATCHED 才推进”是 M2 加的正确行为），所以不能拿真下发链路跑全矩阵 | **已做 4 条云侧四维用例**（FI-02 重复、FI-05 乱序、FI-14 告警无人处置、X-06 无归属），其余 FI 的云侧效果目前只在设备侧矩阵 + 阶段 1 业务用例里断言 | **M3 门 A 尚未完全达成**：跨进程只跑主线一条，全量 FI 的云侧四维仍欠；补齐方式已定（给每条 FI 用 InboundRouter.dispatch 驱动一份真报文），登记在本行不当作已完成 |
 
 ## 5. 变更日志
+- 2026-10-01：**M3 阶段 2（设备侧 L2 + 双端可归因）**——FaultPolicy 从 6 类补到 15 类（FI-05/06/07/08/09/11/12/14/15），
+  异常报文三形态（发出即过期 / 错签 / 旧 nonce+新 msgId）与同 msgId 重投**分成两条用例**（它们的云侧分支不同，混用可以靠幂等冒充“重放防护”）；
+  场景 DSL（`Scenario` + `ScenarioRunner`，只做线性步骤，未知步骤直接失败）与 16 份场景文件（唯一存放处 `protocol/scenarios/`，不往 resources 复一份）；
+  `SimControlServer`（`--control-port`，JDK HttpServer，只绑 127.0.0.1；`/status` `/fault` `/action` `/link` `/metrics`）；
+  `SimCloudDriver`（场景用的最小云侧替身，能发正常/过期/错签/重放报文）；
+  **矩阵用例** `SimFiMatrixTest`：每一份场景文件一条用例 + 两条固化断言（FI-01..15 每项至少一份文件、同 seed 时间线一致）；
+  云侧四维 `SwapFiCloudEffectsTest`（报文从 `InboundRouter` 进，每条固定写满“状态/资产/权益/工单与差异”四行）；
+  **千台规模** `SimScaleTest`（口径写死在类注释与文档 §7.4：同 JVM 1000 条连接，本机 4.7s / 堆增量 42 MB；**不等于 1000 台真机**）；
+  设备侧指标（不引 Micrometer，手写 exposition）：`sim_device_commands_received / replies_sent / events_sent / telemetry_sent / inbound_rejected / fault_fired`。
+  本轮自误：① 首版用 `used - init` 算堆，因 JVM 初始预留大于实际使用而报出负数，改取绝对已用；
+  ② `eventsSent` 不含遥测主题，导致规模用例断言到 0（不是丢包而是计数器分类错），补 `telemetrySent`；
+  ③ 重复性断言一开始拿“全部报文到达交错序列”去比，跨主题交错本就由两个线程发布、不是 seed 能管的东西，
+  改为“事件顺序 + 应答条数”（这不是放宽：seed 要保证的是注入产生的序列可复现，不是调度器可复现）；
+  ④ 注释里写错一个字造成 Javadoc 提前终止（`E2*/` 里的 `*/`），编译器报的是“语法错误”而不是“注释写错”，已改为 E2x/E3x/E4x。
+  **阶段 3 尚未开工**：混沌三脚本（kill 实例 / Broker 重启 / 断 Redis）与压测“不变式违反数=0”仍为待做项，见下一行登记。
+  自证：buddy `mvn clean verify` 全绿（新增 4 例）；buddy-sim `mvn clean verify` 全绿（新增 35 例）。
 - 2026-10-01：**M3 阶段 1（云侧一致性与补偿）**——补偿动作目录代码化（`CompensationAction` 14 动作 + FSM 文档 §7.1 + **四方契约断言**：
   文档↔DDL CHECK↔枚举↔`SwapCompensationExecutor.implementedActions()`）、补偿执行器（逐项事务 + 指数退避 + 耗尽转人工 +
   **无执行者不假装完成** + 做完收尾 `ABORTING`）、对账自愈 `AssetLedgerReconcileJob`（I7 三条双向检查，自愈动作走补偿台账而不是直改表）、

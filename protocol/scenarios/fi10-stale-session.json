@@ -1,0 +1,15 @@
+{
+  "name": "fi10-stale-session",
+  "seed": 42,
+  "description": "FI-10：断线重连后仍要能发出一条带**旧会话号**的迟到应答。本场景只断言设备侧确实把这条注入发出去了（有两次开门事件 + fired 记录）；'报文里的 sessionId 等于重连前那个会话'需要跨报文比对字段，场景 DSL 词表里没有，由 SimFiMatrixTest 的代码用例守住。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "STALE_SESSION_REPLY", "cmdCode": "OPEN_SLOT"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 1}, "ttl": 30},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "eventCounts": {"door_open": 1}},
+    {"do": "link", "op": "reconnect"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 2}, "ttl": 30},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "eventCounts": {"door_open": 2}, "faultFired": "staleSessionReply:OPEN_SLOT"},
+    {"do": "log", "message": "重连后的这一次开门同时产生了新会话应答与一条旧会话应答：迟到判定的责任在云侧比对会话号"}
+  ]
+}

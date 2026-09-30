@@ -1,0 +1,15 @@
+{
+  "name": "fi11-insert-then-leave",
+  "seed": 42,
+  "description": "FI-11：用户把旧电池投进去但不关门就走。设备侧形状是'有 battery_detected、没有 door_close'；云侧必须据此把这块电池转待取回而不是回池（资产责任边界在 FSM §6 FI-11）。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "INSERT_NO_CLOSE"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 5}, "ttl": 30},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "waitEvent": "door_open"},
+    {"do": "action", "action": "insert", "slotNo": 5, "batteryCode": "BAT-USER-7", "soc": 22},
+    {"do": "wait", "ms": 300},
+    {"do": "assert", "events": ["battery_detected"], "absentEvents": ["door_close"], "faultFired": "insertNoClose:5"},
+    {"do": "log", "message": "投入事实已上报而门未关：事实链缺 door_close 是有意的，不是丢包"}
+  ]
+}

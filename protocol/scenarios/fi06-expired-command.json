@@ -1,0 +1,11 @@
+{
+  "name": "fi06-expired-command",
+  "seed": 42,
+  "description": "FI-06：设备收到一条发出时就已过期的指令。必须回 E1003 并且**不执行**（门不能开）——过期指令被执行是安全事故，不是通信问题。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "sendExpired", "cmd": "OPEN_SLOT", "data": {"slotNo": 6}, "expiredSeconds": 30},
+    {"do": "assert", "anyReplyCode": "E1003", "absentEvents": ["door_open"], "rejectedInboundAtLeast": 1},
+    {"do": "log", "message": "E1003 已回且门未开：有效期不信任设备时钟，过期就是拒绝执行"}
+  ]
+}

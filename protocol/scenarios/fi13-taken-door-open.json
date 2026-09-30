@@ -1,0 +1,15 @@
+{
+  "name": "fi13-taken-door-open",
+  "seed": 42,
+  "description": "FI-13：用户取走电池但门没关。形状是'有 battery_taken、没有 door_close'——钱按成功结算、物按异常处置（独立告警 + 远程处置），这条场景守的是'取走事实必须如实上报'。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "LEAVE_DOOR_OPEN", "cmdCode": "UNLOCK_SLOT"},
+    {"do": "send", "cmd": "UNLOCK_SLOT", "data": {"slotNo": 7}, "ttl": 30},
+    {"do": "assert", "cmd": "UNLOCK_SLOT", "replyCode": "OK", "waitEvent": "door_open"},
+    {"do": "action", "action": "take", "slotNo": 7, "batteryCode": "BAT-FULL-7", "soc": 99},
+    {"do": "wait", "ms": 300},
+    {"do": "assert", "events": ["battery_taken"], "absentEvents": ["door_close"], "faultFired": "leaveDoorOpen:7"},
+    {"do": "log", "message": "取走已上报、门未关：不得因为门没关就把电池说成没被拿走"}
+  ]
+}

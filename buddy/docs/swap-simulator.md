@@ -166,19 +166,66 @@ FI-01..16 的**语义定义在 `swap-protocol.md` §13**（协议层规范，不
 
 ---
 
-## 8. 控制面（HTTP，供 Playwright E2E / JMeter / 手工使用）
+### 7.3 场景 DSL（M3 阶段 2 已交付）
+
+场景文件是唯一存放处：仓库根 `protocol/scenarios/*.json`（共享数据资产，**不往 `src/main/resources` 复一份**，
+复一份就会一份改一份不改）。入口：`java -jar buddy-sim.jar --scenario fi05-out-of-order [--host … --port …]`，
+退出码 0/1，失败时逐行报“期望 vs 实际”；`--list-scenarios` 列出全部。
+
+| 步骤 | 字段 | 语义 |
+|---|---|---|
+| `fault` | `kind` / `cmdCode` / `repeatTimes` / `errorCode` / `times` / `value` | 追加一个触发器（实现 §7.1 的“精确编排”，参数为空则报错而不是猜默认值） |
+| `send` | `cmd` / `data` / `ttl` / `critical` | 云侧替身下发一条指令（`critical` 走 `cmd/critical`） |
+| `sendExpired` / `sendBadSign` / `sendReplayNonce` / `resend` | `cmd` / `data` | 异常报文四种形态：发出即过期 / 错签 / 旧 nonce+新 msgId / 同 msgId 重投（后两个是 FI-07 与 FI-02，形状不同所以分两个动词） |
+| `action` | `action=insert\|take\|close\|telemetry\|alarm` | 代用户执行物理动作（投入与关门是两个事实） |
+| `link` | `op=connect\|disconnect\|reconnect` | 连接生命周期（FI-10 与混沌用） |
+| `wait` | `ms` | 时间推进 |
+| `assert` | `cmd` / `replyCode` / `replyCount` / `anyReplyCode` / `events` / `absentEvents` / `eventCounts` / `order` / `faultFired` / `rejectedInboundAtLeast` / `settleMs` | 设备侧行为形状断言 |
+| `log` | `message` | 报告行 |
+
+**只做线性步骤，不做分支与循环**（计划风险 R4）：一旦出现“需要 if”，拆成两个场景文件或回到测试代码，
+不给这个格式加语法。需要跨报文比对字段（如“应答的 sessionId 等于重连前那个”）的断言留在代码里
+（`SimFiMatrixTest#staleSessionReplyCarriesOldSessionId`）。
+
+矩阵用例：`SimFiMatrixTest` 把 `protocol/scenarios/` 下**每一份文件**当一条用例跑，另外两条固化的断言：
+① **FI-01..15 每项至少一份场景**（文件被删就会红，而不是静默变少）；② **同 seed 跑两次到达顺序一致**。
+
+### 7.4 千台规模（M3 阶段 2 已交付，口径先说清）
+
+`SimScaleTest` 证的是**同一个 JVM 内 1000 条设备连接**：建连、每台一条遥测、抽样 20 台做真实指令往返、
+全部释放后 `isConnected()` 必为 false（不拿“没报错”当“已释放”）。本机实测：**4.7s、堆增量 42 MB**。
+**不证** 1000 台真机 / 1000 个进程 / 跨机网络 / Broker 集群容量（属外部硬约束，最接近的替代是 M7 互操作档）。
+把结果写成“1000 台设备在线”就是谎报。
+
+---
+
+## 8. 控制面（HTTP）
+
+### 8.1 已交付（M3 阶段 2，`--control-port <port>`）
+
+实现在 `SimControlServer`（JDK `HttpServer`，不引 Web 依赖）。路径不带 `/sim` 前缀（单进程只服务自己那批设备，
+前缀只是噪声）；多设备时**必须带 `?device=`**，只有一台时可省略——“给哪台注入”不能靠猜。
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| POST | `/sim/scenario/load` | 加载场景（规模、节拍、seed、故障编排表） |
-| POST | `/sim/devices/{id}/fault` | 对单台设备即时注入故障（手工演示与 E2E 用） |
-| POST | `/sim/step/advance` | 推进可控时钟（测试确定性） |
-| GET | `/sim/devices/{id}/state` | 查设备内部真实状态（门/锁/仓/电池），用于归因比对 |
-| POST | `/sim/devices/{id}/claim` | 手工构造一次"设备侧主动声明"（测用户声明优先级最低规则） |
-| GET | `/sim/report/injections` | 注入记录（§7.1 第三项） |
-| GET | `/actuator/health` `/metrics` | 存活与自身指标 |
+| GET | `/status` | 会话号（含旧会话）、仓位快照（门/锁/充电）、已注入故障、已触发记录、五个计数器 |
+| POST | `/fault` | 即时追加一个故障触发器（E2E 与手工演示用） |
+| POST | `/action` | 代用户执行：`insert` / `take` / `close` / `telemetry` / `alarm` |
+| POST | `/link` | `connect` / `disconnect` / `reconnect`（FI-10 与混沌场景的开关） |
+| GET | `/metrics` | Prometheus 文本（见 §9） |
 
-控制面默认**只绑 127.0.0.1**，且需 `sim.control.enabled=true` 才开启——它是攻击工具形态的能力入口，不能默认对外。
+默认只绑 `127.0.0.1`；传 `--control-port 0` 由系统分配端口（测试靠它避免端口冲突）。
+**没做鉴权**：这个进程能伪造报文、错签、重放，所以它只能出现在本机与 CI，
+一旦需要对外暴露就必须先加 token（登记为未交付项，不默认存在）。
+
+### 8.2 本节原本要求、但 **尚未交付** 的能力（诚实边界）
+
+| 能力 | 状态 | 影响与替代 |
+|---|---|---|
+| `/sim/step/advance` 可控时钟推进 | 未做 | 场景靠 `wait` + 真实延迟；确定性由 seed 与 `settleMs` 保证，目测未出现不可解释的拖红 |
+| `/sim/devices/{id}/claim`（设备主动声明） | 未做 | 云侧“用户声明不推进状态”的断言在 `SwapFlowService.declareClosed` 的单测里走 API 层测，不依赖模拟器 |
+| `/sim/report/injections` | 未做（并入 `/status` 的 `faultFired`） | 注入记录目前只在进程内存里，**不落盘**：长跑归因需要报告时这里会不够用，已登记 ROADMAP §4 |
+| `sim.control.enabled` 开关 | 未做 | 现阶段以“不传 `--control-port` 就不启”为等价实现 |
 
 ---
 

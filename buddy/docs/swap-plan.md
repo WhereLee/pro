@@ -222,9 +222,16 @@
 > `emergencyStopSite` 的外层 `@Transactional` + 内部 try/catch 是**假隔离**（内层一抛整个事务被标 rollback-only，
 > 方法照样返回“成功”，锁柜与中止全被回滚）——改为逐柜独立事务 + 逐单独立提交。
 >
-> **待做 → 阶段 2（设备侧 L2）/ 阶段 3（验证门）**：FaultPolicy 补满 9 类、场景 DSL、**HTTP 控制面**
->（原列入阶段 0 的计划项，因联跑用 `--auto-swap` 定长动作即可完成而**顺延到本阶段**，已登记 ROADMAP §4）、
-> FI-01..16 矩阵与四维断言、双端指标可归因、千台规模、混沌三脚本、压测“不变式违反数=0”。
+> **阶段 2 已交付（2026-10-01，设备侧 L2）**：FaultPolicy 补到 15 类（FI-05/06/07/08/09/11/12/14/15），
+> 场景 DSL（`Scenario`+`ScenarioRunner`，只做线性步骤）+ 16 份场景文件（`protocol/scenarios/`，唯一存放处）、
+> HTTP 控制面 `SimControlServer`（`--control-port`，只绑 127.0.0.1）、`SimCloudDriver`（场景用的云侧替身）、
+> **矩阵用例** `SimFiMatrixTest`（每份文件一条 + “FI-01..15 每项至少一份”与“同 seed 可重复”两条固化断言）、
+> 云侧四维 `SwapFiCloudEffectsTest`、**千台规模** `SimScaleTest`（口径：同 JVM 1000 条连接，不等于 1000 台真机）、
+> 设备侧 `/metrics`（`sim_device_*` 六个计数器）。详见 `swap-simulator.md` §7.3/§7.4/§8 与 ROADMAP §5。
+>
+> **待做 → 阶段 3（验证门）/ 阶段 4（出门）**：混沌三脚本（kill 实例 / Broker 重启 / 断 Redis）、
+> 压测“**不变式违反数 = 0**”、**云侧 FI 四维断言补全**（现 4 条，余下靠设备侧矩阵 + 阶段 1 业务用例覆盖——
+> 已登记 ROADMAP §4，**M3 门 A 不得当作已过**）、注入记录落盘、CI 新 job 与 `m3-done` 出门核对。
 
 - **云侧**：补偿动作目录与台账、对账自愈、拒收双分岔（R-A/R-B）、安全联动（紧急停充/锁柜/告警升级）、`UNCONFIRMED` 收敛、重启现场重建。
 - **设备侧 L2**：FI-01..16 补满、场景 DSL、seed 可重复、HTTP 控制面、双端 Prometheus 指标（可归因）、千台规模。

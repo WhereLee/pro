@@ -1,0 +1,13 @@
+{
+  "name": "fi15-bad-thing-model",
+  "seed": 42,
+  "description": "FI-15：上报不合物模型的遥测（这里把 cabinetTemp 的数字写成字符串）。设备侧要如实把坏值发出去，云侧的处置是'拒收这一条 + 留痕 + 计数'，主链路不阻塞。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "BAD_THING_MODEL", "cmdCode": "TELEMETRY", "value": "cabinetTemp"},
+    {"do": "action", "action": "telemetry", "cabinetTemp": 33.0, "power": 1.4},
+    {"do": "wait", "ms": 300},
+    {"do": "assert", "faultFired": "badThingModel:cabinetTemp"},
+    {"do": "log", "message": "坏值已发出：云侧必须拒收并留痕，不能因为它中断换电"}
+  ]
+}

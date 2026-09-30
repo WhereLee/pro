@@ -1,0 +1,13 @@
+{
+  "name": "fi02-duplicate-delivery",
+  "seed": 42,
+  "description": "FI-02：同 msgId 的应答被重复投递 3 次（QoS1 语义）。断言两件事：应答确实有 3 条，而物理事件只有 1 条——重复的是通信，不是动作。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "DUPLICATE_REPLY", "cmdCode": "OPEN_SLOT", "repeatTimes": 3},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 2}, "ttl": 30},
+    {"do": "wait", "ms": 900},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "replyCount": 3, "eventCounts": {"door_open": 1}},
+    {"do": "log", "message": "3 条应答 + 1 次开门：云侧的幂等判据是 msgId，不是应答条数"}
+  ]
+}

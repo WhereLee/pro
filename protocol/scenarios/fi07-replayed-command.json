@@ -1,0 +1,14 @@
+{
+  "name": "fi07-replayed-nonce",
+  "seed": 42,
+  "description": "FI-07：真重放——签名与 nonce 是旧的、msgId 是新的。设备必须回 E1002，且同一个物理动作不能发生第二次（door_open 仍然只有 1 条）。与 fi02-duplicate-delivery 是两条不同的形状：那条是同 msgId 重投，走幂等重放应答。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 7}, "ttl": 30},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "waitEvent": "door_open"},
+    {"do": "sendReplayNonce", "cmd": "OPEN_SLOT", "data": {"slotNo": 7}, "ttl": 30},
+    {"do": "wait", "ms": 300},
+    {"do": "assert", "anyReplyCode": "E1002", "eventCounts": {"door_open": 1}, "rejectedInboundAtLeast": 1},
+    {"do": "log", "message": "旧 nonce 复用被拒且门只开了一次：重放防护与幂等重放是两条独立防线"}
+  ]
+}

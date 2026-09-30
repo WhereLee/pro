@@ -1,0 +1,13 @@
+{
+  "name": "fi05-out-of-order",
+  "seed": 7,
+  "description": "FI-05：事件乱序（先报 door_close 再报 door_open）。设备侧必须真的把倒挂发出去——如果实现把顺序'整理好'了，这条场景就永远测不到云侧的 fromState 谓词。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "OUT_OF_ORDER_EVENTS", "cmdCode": "OPEN_SLOT"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 5}, "ttl": 30},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "timeoutMs": 2000},
+    {"do": "assert", "order": ["door_close", "door_open"], "faultFired": "outOfOrder:OPEN_SLOT"},
+    {"do": "log", "message": "到达顺序已按倒挂断言：door_close 在 door_open 之前被观测者收到"}
+  ]
+}

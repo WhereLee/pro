@@ -1,0 +1,20 @@
+{
+  "name": "swap-happy-path",
+  "seed": 42,
+  "description": "正常换电主线（设备侧视角）：S1 开归还仓 → 投入并关门 → 身份核验 → S4 开取电仓 → 取走并关门。每一步都断言'该出现的事实都出现了'，不是断言'没报错'。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 1}, "ttl": 30},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "waitEvent": "door_open", "events": ["door_open"]},
+    {"do": "action", "action": "insert", "slotNo": 1, "batteryCode": "BAT-USER-1", "soc": 30},
+    {"do": "assert", "events": ["battery_detected", "door_close"]},
+    {"do": "send", "cmd": "BATTERY_VERIFY", "data": {"slotNo": 1, "challenge": "ch-001"}, "ttl": 20},
+    {"do": "assert", "cmd": "BATTERY_VERIFY", "replyCode": "OK"},
+    {"do": "send", "cmd": "UNLOCK_SLOT", "data": {"slotNo": 2}, "ttl": 30},
+    {"do": "assert", "cmd": "UNLOCK_SLOT", "replyCode": "OK", "waitEvent": "door_open"},
+    {"do": "action", "action": "take", "slotNo": 2, "batteryCode": "BAT-FULL-9", "soc": 100},
+    {"do": "assert", "events": ["battery_taken", "door_close"], "absentEvents": ["alarm"]},
+    {"do": "action", "action": "telemetry", "cabinetTemp": 31.5, "power": 1.1},
+    {"do": "log", "message": "主线跑完：设备侧四个事实（open/detected/close/taken）齐备"}
+  ]
+}

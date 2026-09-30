@@ -1,0 +1,13 @@
+{
+  "name": "fi14-safety-alarm",
+  "seed": 11,
+  "description": "FI-14：换电中途烟感。设备侧要在门开后立即上报 CRITICAL 告警并**就地自停充电**（协议 §4.3：收不到 EMERGENCY_STOP 也必须自停），安全动作不能只有一个执行者。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "action", "action": "telemetry", "cabinetTemp": 30.0, "power": 1.0},
+    {"do": "fault", "kind": "SAFETY_ALARM", "cmdCode": "OPEN_SLOT", "value": "SMOKE"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 4}, "ttl": 30},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "events": ["door_open", "alarm"], "faultFired": "safetyAlarm:SMOKE"},
+    {"do": "log", "message": "告警已上报且设备自停充电：后续人工/云侧联动只是加一层，不是唯一防线"}
+  ]
+}

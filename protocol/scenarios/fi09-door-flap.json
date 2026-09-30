@@ -1,0 +1,13 @@
+{
+  "name": "fi09-door-flap",
+  "seed": 42,
+  "description": "FI-09：门磁在极短窗口内抖动 3 轮（同仓 open/close 交替）。设备侧的责任是如实上报每一次磁感变化，合并与转 door_fault 是云侧的事——所以这里断言'确实发了 4 次开、3 次关'，而不是断言被合并。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "DOOR_FLAP", "cmdCode": "OPEN_SLOT", "times": 3},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 1}, "ttl": 30},
+    {"do": "wait", "ms": 600},
+    {"do": "assert", "cmd": "OPEN_SLOT", "replyCode": "OK", "eventCounts": {"door_open": 4, "door_close": 3}, "faultFired": "doorFlap:1#3"},
+    {"do": "log", "message": "抖动的 3 轮都如实上报了：云侧若把它当成 4 次开门就是它的合并缺陷，不是设备少发了"}
+  ]
+}

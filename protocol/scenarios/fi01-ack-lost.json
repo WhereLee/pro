@@ -1,0 +1,13 @@
+{
+  "name": "fi01-ack-lost",
+  "seed": 42,
+  "description": "FI-01：指令不回任何应答，但门真的开了。断言两件事——云侧收不到 cmd_reply，而设备侧仓位状态已经是 OPEN（'超时 ≠ 未发生'的形状）。",
+  "steps": [
+    {"do": "link", "op": "connect"},
+    {"do": "fault", "kind": "DROP_REPLY", "cmdCode": "OPEN_SLOT"},
+    {"do": "send", "cmd": "OPEN_SLOT", "data": {"slotNo": 3}, "ttl": 30},
+    {"do": "wait", "ms": 400},
+    {"do": "assert", "replyCount": 0, "cmd": "OPEN_SLOT", "events": ["door_open"], "faultFired": "dropReply:OPEN_SLOT"},
+    {"do": "log", "message": "应答为 0 条而 door_open 已发出：物理事实与通信回执是两条独立通道"}
+  ]
+}
