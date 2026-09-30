@@ -180,6 +180,20 @@
   症状是测试挂住而不是报错）—— 同一个坑两次在不同代码里重现，证明它值得写进文档而不只是注释。
   自证：`buddy-sim` **20 用例全绿**（原 15 + 新 5）；`buddy` **120 用例全绿 + JaCoCo 达标**。
   仍未做：两个独立进程的跨进程联跑（属 M3 混沌/场景 DSL 范畴），以及设备注册接口取密钥（M2）。
+- 2026-09-30：**M2 第 4 批（B4）：事件驱动闭环——一单从建单跑到 COMPLETED**——
+  `SwapFlowService`（S1 下发、四类物理事件推步骤与订单、S3 核验、S4 下发、结算与归属变更、中止补偿）
+  + `SwapEventListener`（接在 M1 校验链之后，不重复做安全判定）。
+  关键取舍：① S1 只有在网关真的 SENT 后才推订单，否则整事务回滚（不留永远发不出的指令，
+  也不把订单建在假事实上）；② I3 优先于 §5.1 第 10 条的字面写法，归属变更推迟到结算事务（已写注释）；
+  ③ 补偿集中一处、先补完再落 ABORTED（I8）；④ 柜侧陈述（swap_result）按 orderNo 归属，
+  因此能比到已完成的单——只查在途单会把可比对的陈述当成无关事件丢掉。
+  本批被测试/诊断拉出的四个真缺口（当场全修）：
+  ① 分配结果没回写 `swap_order.return_slot_no/offer_slot_no`，导致设备事件全被当无关丢弃
+  （表现为“测试默默不推进”，靠给断言加诊断信息——unmatched 差异数/订单态/幂等行数——才一次定位）；
+  ② 无指令步骤的第一个事实复用了 `EVT_DOOR_OPEN`，被穷举测试判非法→新增 `EVT_FACT_ARRIVED`；
+  ③ 核验型 S3 与云内 S6 没有入口边（文档只写了物理主线）→ 按语义补 DISPATCHED→VERIFIED、PENDING→PHYSICS_DONE；
+  ④ 多处 SQL 列数/参个不匹配（member_user、swap_battery、swap_order_event、swap_battery_binding）。
+  自证：`mvn verify` **180 用例全绿 + JaCoCo 达标**（新增 `SwapFlowTest` 6 例，全主线一例跨真 MQTT 跑完 8 步）。
 - 2026-09-30：**M2 第 3 批：建单主链路与 guard 链**——`SwapOrderService.create` 把三条约束全部交给 DB
   （一人一单 = `active_user` 生成列唯一索引；抢仓 = `active_slot` 唯一索引直接 INSERT，不先查；
   额度够不够 = 带条件 UPDATE 的影响行数），拒绝路径落 REJECTED 行并可断言零物理动作。

@@ -131,6 +131,10 @@ public class SwapOrderService {
             return reject(orderId, orderNo, userId, List.of("SLOT_RACE_LOST"), now, traceId);
         }
         repo.markSlotsReserved(returnSlotRowId, offerSlotRowId, orderId, now);
+        // 分配结果必须回写订单头：事件归属靠 return_slot_no / offer_slot_no。
+        // 只写步骤表与预占表会得一个很难看的症状：设备事件真的到了、签名也对，
+        // 却因为订单头上仓号为 NULL 而被当成无关事件默默丢掉（本批实际踩过）。
+        repo.assignSlots(orderId, returnSlot.slotNo(), offerSlot.slotNo(), offerBatteryId);
 
         // ---- 5) 订单推进到 AUTHORIZED（迁移合法性交给状态机）+ 生成 S1..S6 ----
         long deadlineTs = now.plusSeconds(OrderState.AUTHORIZED.maxDwellSeconds())

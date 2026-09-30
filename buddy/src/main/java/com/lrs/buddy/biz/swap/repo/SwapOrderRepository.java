@@ -13,6 +13,13 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
+/** 流水 id 生成：不依赖 MyBatis 雪花工具的地方用这个最小实现（表列是 BIGINT 自增以外手工填）。 */
+class IdWorkerLike {
+    static long next() {
+        return com.baomidou.mybatisplus.core.toolkit.IdWorker.getId();
+    }
+}
+
 /**
  * 订单主线的数据访问（JdbcTemplate，不用 ORM）。
  *
@@ -33,8 +40,12 @@ public class SwapOrderRepository {
 
     /** 订单头（够服务层做 guard 与推进用，字段刻意精简；null 表示不存在）。 */
     public record OrderRow(Long id, String orderNo, Long userId, Long siteId, Long cabinetId,
-                           Integer returnSlotNo, Integer offerSlotNo, String state, String rightState,
-                           Long tenantId) {
+                           Integer returnSlotNo, Integer offerSlotNo, Long returnBatteryId, Long offerBatteryId,
+                           String state, String rightState, Long tenantId) {
+    }
+
+    /** 柜机对应的接入设备行：下发指令需要 productKey / deviceId / 设台账 id。 */
+    public record CabinetDeviceRow(Long deviceRowId, String productKey, String deviceId) {
     }
 
     public record MemberRow(Long id, String state, Integer riskFlag) {
@@ -144,13 +155,30 @@ public class SwapOrderRepository {
     }
 
     public OrderRow findOrder(long orderId) {
+        return orderForRow(" WHERE id = ?", orderId);
+    }
+
+    /**
+     * 按单号查订单，**包含已终的订单**。
+     *
+     * 对账与柜侧陈述比对必须能引用到已完成的历史单：柜机上报 swap_result 往往在云端已结算之后，
+     * 只查在途单会把这条本来可比对的陈述当成"无关事件"，差异就漏了。
+     */
+    public OrderRow findByOrderNo(String orderNo) {
+        return orderForRow(" WHERE order_no = ?", orderNo);
+    }
+
+    private OrderRow orderForRow(String whereClause, Object arg) {
         List<OrderRow> rows = jdbc.query("SELECT id, order_no, user_id, site_id, cabinet_id, return_slot_no, "
-                        + "offer_slot_no, order_state, right_state, tenant_id FROM swap_order WHERE id = ?",
+                        + "offer_slot_no, return_battery_id, offer_battery_id, order_state, right_state, tenant_id "
+                        + "FROM swap_order" + whereClause,
                 (rs, i) -> new OrderRow(rs.getLong("id"), rs.getString("order_no"), rs.getLong("user_id"),
                         rs.getLong("site_id"), rs.getLong("cabinet_id"), nullableInt(rs, "return_slot_no"),
-                        nullableInt(rs, "offer_slot_no"), rs.getString("order_state"), rs.getString("right_state"),
-                        rs.getLong("tenant_id")),
-                orderId);
+                        nullableInt(rs, "offer_slot_no"),
+                        rs.getObject("return_battery_id") == null ? null : rs.getLong("return_battery_id"),
+                        rs.getObject("offer_battery_id") == null ? null : rs.getLong("offer_battery_id"),
+                        rs.getString("order_state"), rs.getString("right_state"), rs.getLong("tenant_id")),
+                arg);
         return rows.isEmpty() ? null : rows.get(0);
     }
 
@@ -434,6 +462,180 @@ public class SwapOrderRepository {
 
     public Duration freshnessOf(int seconds) {
         return Duration.ofSeconds(Math.max(30, seconds));
+    }
+
+    // ---------------- 事件驱动流程需要的读写 ----------------
+
+    /** 按接入设备找它的在途订单（一个柜机同时至多一单在处理物理动作）。 */
+    public OrderRow findInfightByDevice(long deviceRowId) {
+        List<OrderRow> rows = jdbc.query("SELECT o.id, o.order_no, o.user_id, o.site_id, o.cabinet_id, "
+                        + "o.return_slot_no, o.offer_slot_no, o.return_battery_id, o.offer_battery_id, "
+                        + "o.order_state, o.right_state, o.tenant_id "
+                        + "FROM swap_order o JOIN swap_cabinet c ON c.id = o.cabinet_id "
+                        + "WHERE c.device_row_id = ? AND o.active_user IS NOT NULL ORDER BY o.id DESC LIMIT 1",
+                (rs, i) -> new OrderRow(rs.getLong("id"), rs.getString("order_no"), rs.getLong("user_id"),
+                        rs.getLong("site_id"), rs.getLong("cabinet_id"), nullableInt(rs, "return_slot_no"),
+                        nullableInt(rs, "offer_slot_no"),
+                        rs.getObject("return_battery_id") == null ? null : rs.getLong("return_battery_id"),
+                        rs.getObject("offer_battery_id") == null ? null : rs.getLong("offer_battery_id"),
+                        rs.getString("order_state"), rs.getString("right_state"), rs.getLong("tenant_id")),
+                deviceRowId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public Map<String, Object> step(long orderId, int stepNo) {
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT step_no, step_code, step_state, slot_no, battery_id,"
+                        + " facts_json, dispatch_cmd_id, session_id FROM swap_order_step WHERE order_id = ? AND step_no = ?",
+                orderId, stepNo);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * 步骤事实只追写、不改状态。
+     *
+     * S2/S5 期望的是**两个事实**（battery_detected 与 door_close），它们可以乱序到达：
+     * 先到的存进 facts_json、后到的才推迁移。要求设备按顺序上报是把真实世界当成理想情况，
+     * 4G 丢一个包重投后顺序就变了。
+     */
+    public void setStepFacts(long orderId, int stepNo, String factsJson, LocalDateTime now) {
+        jdbc.update("UPDATE swap_order_step SET facts_json = ?, update_time = ?, version = version + 1 "
+                + "WHERE order_id = ? AND step_no = ?", factsJson, Timestamp.valueOf(now), orderId, stepNo);
+    }
+
+    public CabinetDeviceRow deviceOfCabinet(long cabinetId) {
+        List<CabinetDeviceRow> rows = jdbc.query("SELECT c.device_row_id, d.product_key, d.device_id "
+                        + "FROM swap_cabinet c JOIN iot_device d ON d.id = c.device_row_id WHERE c.id = ?",
+                (rs, i) -> new CabinetDeviceRow(rs.getLong("device_row_id"), rs.getString("product_key"),
+                        rs.getString("device_id")),
+                cabinetId);
+        if (rows.isEmpty()) {
+            throw new IllegalStateException("柜机未绑定接入设备：cabinetId=" + cabinetId);
+        }
+        return rows.get(0);
+    }
+
+    /**
+     * 事件幂等（I6）：靠 `uk_ededup (order_id, event_type, msg_id)` 判重。
+     * 同样不能先查后写；false = 已处理过，调用方必须直接返回而不是"当作异常"。
+     */
+    public boolean insertEventDedup(long id, long orderId, String eventType, String msgId, Integer slotNo,
+                                     LocalDateTime now, long tenantId) {
+        try {
+            jdbc.update("INSERT INTO swap_event_dedup (id, order_id, event_type, msg_id, slot_no, occurred_at, "
+                    + "create_time, tenant_id) VALUES (?,?,?,?,?,?,?, ?)",
+                    id, orderId, eventType, msgId, slotNo, Timestamp.valueOf(now), Timestamp.valueOf(now), tenantId);
+            return true;
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            return false;
+        }
+    }
+
+    public Map<String, Object> batteryByCode(String code) {
+        List<Map<String, Object>> rows = code == null ? List.of()
+                : jdbc.queryForList("SELECT id, battery_state, holder_user_id, current_slot_id, soc, soh, fault_code,"
+                + " location_state FROM swap_battery WHERE battery_code = ? AND del_flag = 0", code);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public Map<String, Object> batteryById(long batteryId) {
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT id, battery_code, battery_state, holder_user_id,"
+                + " current_slot_id, soc, soh, cycle_count FROM swap_battery WHERE id = ? AND del_flag = 0", batteryId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public void moveBattery(long batteryId, String state, Long cabinetId, Long slotId, Long holderUserId,
+                            String locationState, LocalDateTime now) {
+        jdbc.update("UPDATE swap_battery SET battery_state = ?, current_cabinet_id = ?, current_slot_id = ?, "
+                        + "holder_user_id = ?, location_state = ?, last_report_at = ?, update_time = ?, "
+                        + "version = version + 1 WHERE id = ?",
+                state, cabinetId, slotId, holderUserId, locationState, Timestamp.valueOf(now), Timestamp.valueOf(now),
+                batteryId);
+    }
+
+    /** 关用户在途绑定（旧电池不再属于他）与电池侧绑定，两者必须同时关。 */
+    public int closeActiveBindings(Long userId, Long batteryId, String reason, LocalDateTime now) {
+        if (userId != null) {
+            jdbc.update("UPDATE swap_battery_binding SET bind_state = 'HIST', end_at = ?, end_reason = ?, "
+                    + "update_time = ?, version = version + 1 WHERE active_user IS NOT NULL AND user_id = ?",
+                    Timestamp.valueOf(now), reason, Timestamp.valueOf(now), userId);
+        }
+        if (batteryId != null) {
+            jdbc.update("UPDATE swap_battery_binding SET bind_state = 'HIST', end_at = ?, end_reason = ?, "
+                    + "update_time = ?, version = version + 1 WHERE active_battery IS NOT NULL AND battery_id = ?",
+                    Timestamp.valueOf(now), reason, Timestamp.valueOf(now), batteryId);
+        }
+        return 1;
+    }
+
+    public void insertBinding(long id, long batteryId, long userId, long orderId, String evidence,
+                              LocalDateTime now, long tenantId) {
+        jdbc.update("INSERT INTO swap_battery_binding (id, battery_id, user_id, bind_state, bind_source, order_id, "
+                        + "evidence, start_at, create_time, update_time, version, del_flag, tenant_id) "
+                        + "VALUES (?,?,?, 'ACTIVE', 'ORDER', ?, ?, ?, ?, ?, 0, 0, ?)",
+                id, batteryId, userId, orderId, evidence, Timestamp.valueOf(now), Timestamp.valueOf(now),
+                Timestamp.valueOf(now), tenantId);
+    }
+
+    /** 换电完成时的仓位去向：归还仓收到旧电池变 IDLE_CHARGING，取走仓变空仓。 */
+    public void settleSlot(long slotId, Long batteryId, String slotState, String chargeState, LocalDateTime now) {
+        jdbc.update("UPDATE swap_slot SET battery_id = ?, slot_state = ?, charge_state = ?, reserved_order_id = NULL, "
+                        + "last_detected_at = ?, update_time = ?, version = version + 1 WHERE id = ?",
+                batteryId, slotState, chargeState, Timestamp.valueOf(now), Timestamp.valueOf(now), slotId);
+    }
+
+    public int releaseReservationsOfSlot(long slotId, long orderId, LocalDateTime now) {
+        return jdbc.update("UPDATE swap_slot_reservation SET resv_state = 'RELEASED', released_at = ?, "
+                + "release_reason = 'SWAP_DONE', update_time = ? WHERE slot_id = ? AND order_id = ? AND resv_state = 'ACTIVE'",
+                Timestamp.valueOf(now), Timestamp.valueOf(now), slotId, orderId);
+    }
+
+    public void bindSlotsToOrder(long orderId, Long returnBatteryId, Long offerBatteryId) {
+        jdbc.update("UPDATE swap_order SET return_battery_id = ?, offer_battery_id = ?, update_time = CURRENT_TIMESTAMP "
+                + "WHERE id = ?", returnBatteryId, offerBatteryId, orderId);
+    }
+
+    /**
+     * 把分配结果回写订单头。
+     *
+     * 为什么单独一个方法而不是合在建单 INSERT 里：建单时还没完成分配（先有 CREATED 行才能靠
+     * active_user 唯一索引挡住同人二单），分配在它之后。但两个仓号必须落在订单头上——
+     * 事件归属靠的就是它；只写步骤表与预占表会让订单头与步骤不一致，
+     * 表现为“事件到了却被当成无关事件”（本项目的实际踩坑经）。
+     */
+    public void assignSlots(long orderId, Integer returnSlotNo, Integer offerSlotNo, Long offerBatteryId) {
+        jdbc.update("UPDATE swap_order SET return_slot_no = ?, offer_slot_no = ?, offer_battery_id = ?, "
+                + "update_time = CURRENT_TIMESTAMP WHERE id = ?", returnSlotNo, offerSlotNo, offerBatteryId, orderId);
+    }
+
+    /** 扣减：同幂等键 (order_id,'DEDUCT') 写流水；流水失败时账户不动。 */
+    public boolean deductRight(long accountId, long memberId, long orderId, LocalDateTime now, String traceId,
+                              long tenantId) {
+        int updated = jdbc.update("UPDATE swap_right_account SET times_used = times_used + 1, "
+                        + "times_occupied = CASE WHEN times_occupied > 0 THEN times_occupied - 1 ELSE 0 END, "
+                        + "update_time = CURRENT_TIMESTAMP, version = version + 1 "
+                        + "WHERE id = ? AND times_occupied > 0", accountId);
+        if (updated != 1) {
+            return false;
+        }
+        insertRightTransaction(IdWorkerLike.next(), memberId, accountId, orderId, "DEDUCT", 1, null, now, "SWAP_TAKEN",
+                traceId, tenantId);
+        return true;
+    }
+
+    /** 账实差异落点（柜侧陈述与云端事实不一致）。dedup_key 保证同一差异只记一次。 */
+    public boolean insertDiscrepancy(long id, String dedupKey, String kind, Long orderId, Long cabinetId,
+                                      Long batteryId, Long userId, String expectedJson, String actualJson,
+                                      String reason, long tenantId) {
+        try {
+            jdbc.update("INSERT INTO swap_discrepancy (id, dedup_key, kind, order_id, cabinet_id, battery_id, user_id, "
+                            + "expected_json, actual_json, auto_resolvable, handle_state, remark, create_time, "
+                            + "update_time, version, del_flag, tenant_id) "
+                            + "VALUES (?,?,?,?,?,?,?, ?,?, 0, 'OPEN', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0, 0, ?)",
+                    id, dedupKey, kind, orderId, cabinetId, batteryId, userId, expectedJson, actualJson, reason, tenantId);
+            return true;
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            return false;
+        }
     }
 
     /** 单号：SW + 日期 + 序列位。可读且能一眼看出日期。 */

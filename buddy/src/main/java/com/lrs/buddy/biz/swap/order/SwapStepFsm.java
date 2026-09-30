@@ -19,6 +19,12 @@ public final class SwapStepFsm {
         RE_DISPATCHED,
         /** 收到 door_open */
         EVT_DOOR_OPEN,
+        /**
+         * 无指令步骤（S2/S5）收到第一个事实。
+         * 不能复用 EVT_DOOR_OPEN：那会让"等待投入"步骤的第一个事实被当成"门开了"，
+         * 语义错误而且事后无法从事件流里区分两者。
+         */
+        EVT_FACT_ARRIVED,
         /** 收到本步骤期望的全部物理事件（S2/S5 是"两个事件都到"） */
         EVT_PHYSICS_DONE,
         /** ACK 已到但物理事件缺失（不可断定，不是失败） */
@@ -47,6 +53,10 @@ public final class SwapStepFsm {
     private static StateMachine<StepState, Event> build() {
         StateMachine<StepState, Event> sm = new StateMachine<>("swap-step");
         sm.allow(StepState.PENDING, Event.DISPATCHED, StepState.DISPATCHED);
+        sm.allow(StepState.PENDING, Event.EVT_FACT_ARRIVED, StepState.OPEN_CONFIRMED);
+        // S6（SETTLE）没有指令也没有设备事件，它的"完成"就是云内事务提交。
+        // 允许 PENDING 直接到 PHYSICS_DONE，否则结算要凭空多一次假下发才能合法推进。
+        sm.allow(StepState.PENDING, Event.EVT_PHYSICS_DONE, StepState.PHYSICS_DONE);
         sm.allow(StepState.PENDING, Event.SUPERSEDED_SKIP, StepState.SKIPPED);
         sm.allow(StepState.DISPATCHED, Event.RE_DISPATCHED, StepState.DISPATCHED);
         sm.allow(StepState.DISPATCHED, Event.EVT_DOOR_OPEN, StepState.OPEN_CONFIRMED);
@@ -58,6 +68,9 @@ public final class SwapStepFsm {
         sm.allow(StepState.OPEN_CONFIRMED, Event.ACK_WITHOUT_EVENT, StepState.CONFIRM_PENDING);
         sm.allow(StepState.OPEN_CONFIRMED, Event.NACK_NOT_EXECUTED, StepState.FAILED);
         sm.allow(StepState.PHYSICS_DONE, Event.VERIFIED, StepState.VERIFIED);
+        // 核验型步骤（S3）没有物理动作，PHYSICS_DONE 对它是空转：允许直接从 DISPATCHED 落 VERIFIED。
+        // 不这么定就会被迫“先假地推一次 PHYSICS_DONE 再推 VERIFIED”，事件流里多出一条无意义记录。
+        sm.allow(StepState.DISPATCHED, Event.VERIFIED, StepState.VERIFIED);
         // CONFIRM_PENDING 的两个出口正是"不可断定"的两条收敛路径：来事实了就纠正，穷尽了就判失败
         sm.allow(StepState.CONFIRM_PENDING, Event.LATE_EVENT, StepState.PHYSICS_DONE);
         sm.allow(StepState.CONFIRM_PENDING, Event.EVT_PHYSICS_DONE, StepState.PHYSICS_DONE);
