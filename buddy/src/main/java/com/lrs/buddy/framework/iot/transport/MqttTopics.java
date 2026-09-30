@@ -48,22 +48,26 @@ public final class MqttTopics {
     }
 
     /**
-     * 解析 up/{productKey}/{deviceId}/{kind} 与 up/{pk}/{dn}/sub/{subDeviceId}/{kind}。
+     * 解析完整主题 swap/v1/up/{productKey}/{deviceId}/{kind}
+     * 与子设备形式 swap/v1/up/{pk}/{dn}/sub/{subDeviceId}/{kind}。
+     *
      * 不匹配返回 null，调用方必须落 raw + 拒绝码，禁止静默丢弃。
+     * 注意：这里按**含前缀的完整主题**解析（Broker 递上来的就是完整主题）；
+     * 早期版本只按去掉 swap/v1 后的段数解析，会让所有上行被误判为未知主题（E0003）。
      */
     public static Inbound parseInbound(String topic) {
         if (topic == null) {
             return null;
         }
         String[] seg = topic.split("/");
-        if (seg.length < 2 || !"up".equals(seg[0])) {
+        if (seg.length < 4 || !"swap".equals(seg[0]) || !VERSION.equals(seg[1]) || !"up".equals(seg[2])) {
             return null;
         }
-        if (seg.length == 4) {
-            return new Inbound(seg[1], seg[2], Kind.of(seg[3]), null);
+        if (seg.length == 6) {
+            return new Inbound(seg[3], seg[4], Kind.of(seg[5]), null);
         }
-        if (seg.length == 6 && "sub".equals(seg[3])) {
-            return new Inbound(seg[1], seg[2], Kind.of(seg[5]), seg[4]);
+        if (seg.length == 8 && "sub".equals(seg[5])) {
+            return new Inbound(seg[3], seg[4], Kind.of(seg[7]), seg[6]);
         }
         return null;
     }

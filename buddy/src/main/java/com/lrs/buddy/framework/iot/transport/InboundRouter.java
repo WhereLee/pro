@@ -8,6 +8,9 @@ import com.lrs.buddy.framework.iot.repo.DeviceDirectoryDao.Device;
 import com.lrs.buddy.framework.iot.repo.IngestDao;
 import com.lrs.buddy.framework.iot.security.DeviceCredentialService;
 import com.lrs.buddy.framework.iot.security.DeviceSecrets;
+import com.lrs.buddy.framework.iot.session.DeviceSessionService;
+import com.lrs.buddy.framework.iot.session.EndpointRegistry;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
@@ -44,10 +47,14 @@ public class InboundRouter {
     private final DedupService dedup;
     private final Executor ingestExecutor;
     private final List<InboundListener> listeners;
+    private final DeviceSessionService sessions;
+    private final EndpointRegistry endpoints;
+    private final MeterRegistry registry;
 
     public InboundRouter(DeviceDirectoryDao deviceDao, DeviceCredentialService credentials, IngestDao ingestDao,
                          JsonPayloadCodec codec, DeviceSecrets secrets, DedupService dedup,
-                         Executor ingestExecutor, List<InboundListener> listeners) {
+                         Executor ingestExecutor, List<InboundListener> listeners,
+                         DeviceSessionService sessions, EndpointRegistry endpoints, MeterRegistry registry) {
         this.deviceDao = deviceDao;
         this.credentials = credentials;
         this.ingestDao = ingestDao;
@@ -56,6 +63,19 @@ public class InboundRouter {
         this.dedup = dedup;
         this.ingestExecutor = ingestExecutor;
         this.listeners = listeners;
+        this.sessions = sessions;
+        this.endpoints = endpoints;
+        this.registry = registry;
+    }
+
+    /** 越权发布：计数 + 日志，不落库（不落库本身就是防写放大的设计）。 */
+    public void rejected(Object endpoint, String topic) {
+        registry.counter("security.reject.total", "code", "E1004").increment();
+    }
+
+    /** 收到任何合法上行都算一次心跳证据（在线判定的权威来源）。 */
+    public void heartbeat(DeviceDirectoryDao.Device device) {
+        sessions.markSeen(device);
     }
 
     /** 由 Broker 客户端回调入口调用；本方法立即返回，不阻塞网络线程。 */
@@ -118,6 +138,8 @@ public class InboundRouter {
             return;
         }
         record(clientId, device, topicName, payload, true, IotErrorCode.OK, now, ts);
+        sessions.markSeen(device);
+        endpoints.touch(device.id(), envelope.sessionId() == null ? endpoints.sessionIdOf(device.id()) : envelope.sessionId());
         deliver(inbound, envelope, device);
     }
 

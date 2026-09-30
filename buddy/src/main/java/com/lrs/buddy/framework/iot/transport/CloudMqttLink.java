@@ -53,7 +53,9 @@ public class CloudMqttLink implements AutoCloseable {
     }
 
     public void start() {
-        if (!properties.isEnabled() || !running.compareAndSet(false, true)) {
+        // 嵌入式模式下上行由 Broker 端点直接交给 InboundRouter；此处再起订阅会造成重复投递，
+        // 所以只在 client 模式（外部 Broker）启动。
+        if (!properties.isClientMode() || !properties.isEnabled() || !running.compareAndSet(false, true)) {
             return;
         }
         // username 与 password 必须来自同一个 ts|nonce，分两次生成会导致口令永远校验不过
@@ -113,6 +115,14 @@ public class CloudMqttLink implements AutoCloseable {
             }
         }
         publishes.close();
+    }
+
+    public boolean isRunning() {
+        return running.get();
+    }
+
+    public void publish(String topic, byte[] payload, int qos) {
+        publish(topic, payload, com.hivemq.client.mqtt.datatypes.MqttQos.fromCode(qos));
     }
 
     public void publish(String topic, byte[] payload, MqttQos qos) {

@@ -1,5 +1,7 @@
 package com.lrs.buddy.framework.iot.config;
 
+import com.lrs.buddy.framework.iot.repo.DeviceDirectoryDao;
+
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -40,7 +42,16 @@ public class IotProperties {
     private String deviceSecretKey;
 
     /**
-     * 云侧内部接入口令（同一个应用既是 Broker 宿主又是 MQTT 客户端）。
+     * 接入模式：{@code embedded}=本进程内起 Broker（本地/CI）；{@code client}=接外部 Broker（生产 EMQX）。
+     * 两者只换传输实现，协议与业务代码不变。
+     */
+    private String mode = "embedded";
+
+    public boolean isClientMode() {
+        return "client".equalsIgnoreCase(mode);
+    }
+
+    /** 云侧内部接入口令（同一个应用既是 Broker 宿主又是 MQTT 客户端）。
      * 缺失时禁止内部客户端连入 —— 宁可接入层不可用，也不留一个默认口令的后门。
      */
     private String internalSecret;
@@ -83,6 +94,14 @@ public class IotProperties {
     private int commandDefaultTtlSeconds = 60;
 
     private long commandScanIntervalMs = 10000;
+
+    /** 默认心跳间隔（秒），用于未接入物模型/品类时的兼底。 */
+    private int defaultHeartbeatSeconds = 120;
+
+    /** 设备心跳间隔：取品类默认值，缺失则用全局兼底。 */
+    public int getHeartbeatSecondsOf(DeviceDirectoryDao.Device device) {
+        return defaultHeartbeatSeconds;
+    }
 
     public byte[] decodedSecretKeyBytes() {
         if (deviceSecretKey == null || deviceSecretKey.isBlank()) {

@@ -16,7 +16,6 @@ import com.lrs.buddy.framework.iot.transport.InboundRouter;
 import com.lrs.buddy.framework.iot.transport.MqttTopics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Disabled;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -46,13 +45,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * 端口固定 18884，避开开发机上可能存在的 1883；只在测试上下文内启动。
  *
- * 【为何暂时 @Disabled】本测试跑到了真 Broker 的 CONNECT 阶段就发现：
- * Moquette 0.17 对 MQTT 5 CONNECT 回的 CONNACK 无法被标准 v5 客户端解码（MqttDecodeException:
- * "Exception while decoding CONNACK: wrong reason code"），因此无法作为本项目的本地 Broker。
- * 这不是测试写错，而是选型结论：接入层换成 Vert.x MQTT Server（同为纯 Java、可嵌入、Apache-2.0），
- * 完成后去掉本注解。开关默认 false 只为了开发/CI 可启动，不等于该问题已解决。
+ * 【换型结论】上一版 Moquette 0.17 在 CONNECT 阶段就过不了（服务端 CONNACK 无法被 v5 客户端解码），
+ * 已换为 Vert.x MQTT Server。过程中踩到两个同类坑，已修并写下注释：
+ * 1) 拒因码要用 netty 的 v5 专用常量 NOT_AUTHORIZED_5(0x87)，用 v3 的 0x05 会让客户端报解码失败而不是认证失败；
+ * 2) 主题解析必须按含 swap/v1 前缀的完整主题分段，段数错位会让所有上行被误判为未知主题（E0003）。
  */
-@Disabled("Moquette 0.17 与 MQTT5 客户端在 CONNACK 上不兼容；待接入层换为 Vert.x MQTT Server 后启用")
 @SpringBootTest(properties = {
         "buddy.iot.enabled=true",
         "buddy.iot.port=18884",
@@ -123,7 +120,7 @@ class IotTransportTest {
                         online_state, enabled, create_time, update_time, version, del_flag, tenant_id)
                 VALUES (?,?,?,?,?,1,'UNKNOWN',1,?,?,0,0,1)
                 """, id, PRODUCT_KEY, deviceId, deviceId,
-                CryptoUtil.aesGcmEncrypt(properties.getDeviceSecretKey(), MASTER_SECRET), now, now, 1L);
+                CryptoUtil.aesGcmEncrypt(properties.getDeviceSecretKey(), MASTER_SECRET), now, now);
         return id;
     }
 
@@ -183,7 +180,14 @@ class IotTransportTest {
                 .payload(codec.encode(signedEnvelope(MASTER_SECRET, "msg-connect-1")))
                 .send();
 
-        assertThat(listener.latch.await(8, TimeUnit.SECONDS)).as("校验链未通过或分发丢失").isTrue();
+        // 失败时把 reject_code 一并报出来：它能直接区分“被 ACL 拒”/“验签失败”/“进了管道但没人处理”，
+        // 没这个信息时同一个红要反复猜才能定位。
+        List<String> rejects = jdbc.queryForList(
+                "SELECT CONCAT(COALESCE(reject_code,'-'), '/', COALESCE(reject_step,'-'))"
+                        + " FROM iot_message_log WHERE device_row_id = ? ORDER BY id DESC LIMIT 5",
+                String.class, id);
+        assertThat(listener.latch.await(8, TimeUnit.SECONDS))
+                .as("校验链未通过或分发丢失，最近留痕（reject_code/reject_step）=" + rejects).isTrue();
         assertThat(listener.received).hasSize(1);
         assertThat(listener.received.get(0).msgId()).isEqualTo("msg-connect-1");
 
@@ -269,13 +273,13 @@ class IotTransportTest {
         Mqtt5BlockingClient client = deviceClient(DEVICE_ID, username, password);
         client.connectWith().cleanStart(true).keepAlive(60).send();
 
-        var subAck = client.subscribeWith()
+        // 客户端在"全部返回码都是错误"时直接抛异常，而不是返回一个可检查的 SubAck
+        assertThatThrownBy(() -> client.subscribeWith()
                 .topicFilter("swap/v1/dn/" + PRODUCT_KEY + "/" + OTHER_DEVICE_ID + "/cmd")
                 .qos(MqttQos.AT_LEAST_ONCE)
-                .send();
-        assertThat(subAck.getReasonCodes())
+                .send())
                 .as("订阅别人的下行主题等于偷看别人的开仓指令，必须拒绝")
-                .allMatch(code -> !code.name().startsWith("GRANTED"));
+                .isInstanceOf(com.hivemq.client.mqtt.mqtt5.exceptions.Mqtt5SubAckException.class);
         client.disconnect();
     }
 }

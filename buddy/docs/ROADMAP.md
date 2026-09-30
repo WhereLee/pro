@@ -78,7 +78,7 @@
 | 2026-09-29 | D · Docker 镜像 | 本机环境未安装 Docker，无法本地 `docker build` / `compose up` 实证容器栈（属环境缺失，非尝试失败） | 探测确认无 Docker 运行时 | 交付 `buddy/Dockerfile`+`buddy-ui/Dockerfile`+`docker-compose.yml`+`nginx.conf`+`.env.example`+两份 `.dockerignore`，镜像构建与编排交 CI `docker` job 及目标环境验证 | 本机未跑起容器栈；但 prod profile 已用真实 jar + MySQL 本地实证（Flyway→v6、硬化、鉴权、业务全绿），Dockerfile/compose 经逐项 review |
 | 2026-09-29 | Q · k6 压测 | 本机未安装 k6，脚本无法本地执行出报告 | 探测确认无 k6；改用已装 JMeter 承担压测实证 | 交付 k6 脚本 `load/barrier-race.js`（未本地执行），压测实证由 JMeter 完成（320 样本 0 错误） | k6 脚本未经本地执行验证，压测场景与 JMeter 一致（登录→随机开/合竞态打同一杆） |
 | 2026-09-29 | swap · 技术选型 | 换电柜需 IoT 中间件（EMQX / TDengine / RocketMQ），本机实测**无 Docker**（MySQL 8.0.44 + Redis 5.0.14 + JDK 17 可用），而 EMQX 与 TDengine 3.x 服务端均无 Windows 原生发行版 → 主链路依赖它们就无法本地与 CI 自证 | 逐项核实环境可用性与各中间件的 Windows 支持情况 | 采用“**能力端口化 + 本地可跑等价件 + 生产可换实现**”：嵌入式 Java Broker（Vert.x MQTT / Moquette）、Transactional Outbox + Redis Stream、MySQL 分区表；并刻意**不依赖 Broker 私有特性与离线队列** | 主链路与故障路径均可本机/CI 实证；代价是本地侧不展示真集群。**取舍登记已集中至 `swap-plan.md` §7（A 类我方选择/B 类加严项）；原 8 项已重分类** |
-| 2026-09-30 | M1 · 本地 Broker 选型 | 目标：本地/CI 用可嵌入纯 Java Broker 跑通 MQTT 5 接入。实测：IotTransportTest 连上 CONNECT 阶段即失败——Moquette 0.17 对 MQTT 5 CONNECT 回的 CONNACK 无法被标准 v5 客户端（HiveMQ MQTT Client）解码，报 `MqttDecodeException: Exception while decoding CONNACK: wrong reason code`；排除自身认证因素后（已把内部客户端口令拆为 `InternalClientSecrets` 单独实现并校验 `cleanStart=true`）仍复现 | 先试 Moquette 0.18/0.19（仓库不存在该版本）、再排除会话缓存与云侧认证路径差异 | **暂定 `buddy.iot.enabled=false` + `IotTransportTest` 标 `@Disabled` 并写明原因**；接入层改为 **Vert.x MQTT Server**（纯 Java、可嵌入、Apache-2.0、v5 支持完整），完成后去掉注解并把默认值改回 true | **未解决，属阻塞而非完成**。开关默认 false 只是为了让开发/CI 能启动；协议仍需 MQTT 5（不改协议来绕过选型问题） |
+| 2026-09-30 | M1 · 本地 Broker 选型 | 目标：本地/CI 用可嵌入纯 Java Broker 跑通 MQTT 5 接入。实测：IotTransportTest 连上 CONNECT 阶段即失败——Moquette 0.17 对 MQTT 5 CONNECT 回的 CONNACK 无法被标准 v5 客户端（HiveMQ MQTT Client）解码，报 `MqttDecodeException: Exception while decoding CONNACK: wrong reason code`；排除自身认证因素后（已把内部客户端口令拆为 `InternalClientSecrets` 单独实现并校验 `cleanStart=true`）仍复现 | 先试 Moquette 0.18/0.19（仓库不存在该版本）、再排除会话缓存与云侧认证路径差异 | **暂定 `buddy.iot.enabled=false` + `IotTransportTest` 标 `@Disabled` 并写明原因**；接入层改为 **Vert.x MQTT Server**（纯 Java、可嵌入、Apache-2.0、v5 支持完整），完成后去掉注解并把默认值改回 true | **已解决（2026-09-30）**：接入层换为 **Vert.x MQTT Server**，`IotTransportTest` 5 个用例全部跑绿（真 TCP + 真 Broker + 真 H2），`buddy.iot.enabled` 默认值已恢复 true、测试档统一关闭 |
 
 ## 5. 变更日志
 - 2026-09-29：初版。基于"buddy=框架、barrier=样例并入 biz、先迁移后开发"重排；旧计划（多租户/前端/E2E+压测/部署/文档）并入本表，前置 M0–M3 合并块，API 健壮性(分页/OpenAPI/幂等)因 buddy 已具备而取消。
@@ -133,5 +133,19 @@
   **它的第一个发现就是选型本身**：Moquette 0.17 与 MQTT5 客户端在 CONNACK 上不兼容，已记入 §4（标 `@Disabled` 而非删测试，
   开关默认 false 而非“装作可用”），下一步换 Vert.x MQTT Server。
   自证：`mvn test` **102 用例全绿**（新测试已 `@Disabled`，不拉低基线；上下文能加载即证明新增 Bean 装配无环）。
+- 2026-09-30：**M1 块 1–2 完成：Broker 换型 Vert.x MQTT Server 并跑绿验收**——
+  换型后连续踩到三个坑，全部定位并修好，且每个坑都留下了可讲清的注释：
+  ① **拒因码分版本**：netty 的 `MqttConnectReturnCode` 把 v3 与 v5 拆成两套常量，
+     用 v3 的 `NOT_AUTHORIZED`(0x05) 回给 v5 客户端会导致客户端报"无法解析 CONNACK"而不是"认证失败"，
+     错因被误导性文案盖住（**与 Moquette 的死因同一类**）；已改用 `NOT_AUTHORIZED_5`(0x87)。
+  ② **主题解析按完整主题分段**：早期实现去掉了 `swap/v1` 前缀再数段数，导致所有上行被误判为未知主题（E0003）；
+     发现它靠的是测试失败时把 `reject_code/reject_step` 一并报出来——**可诊断的失败与不可诊断的失败，差价就是一个下午**。
+  ③ **v5 连接必须用带属性的 accept**，且处理器要装在 CONNACK 之前；否则 Vert.x 报
+     "Received an MQTT packet from a not connected client"，客户端则永远等不到 CONNACK 而超时。
+  另外补上 `publishAutoAck(true)`（不回 PUBACK 会让设备 QoS1 发布死等）、
+  云侧链路只在 `mode=client` 启动（embedded 模式下再起订阅会造成重复投递）。
+  新增 `EndpointRegistry`（本节点端点表 + Redis 路由记录，重连时旧连接的关闭回调不能误新会话）、
+  `DeviceSessionService`（ONLINE/STALE/OFFLINE 三态 + 连续多轮静默才判离线，不信 LWT）。
+  自证：`mvn test` **107 用例全绿（0 fail / 0 skip）**，其中 `IotTransportTest` 5 个为真 TCP 集成用例。
 - 2026-09-29：**CI 结果核查与文档备案（用户要求）**——用 gh CLI 直连核查首次完整流水线（run 36565377941 · `225a079`）：`backend`/`frontend`/`mysql-consistency`/`e2e`/`docker` 五 job 全绿（其中 docker 为新增 job 首跑通过），唯一红为 `security-scan`——根因：`aquasecurity/trivy-action@0.28.0` 引用缺 `v` 前缀（该库 tag 为 `vX.Y.Z`，`0.28.0` ref 实测 404；修复过程见下条）。新增 `buddy/docs/ci.md`：流水线全景 / gh 查看与重跑手册 / 已知问题与修复 / 异地（服务器）能力对齐要点（不含任何凭据），README 文档索引同步。
 - 2026-09-29：**security-scan 修复闭环（用户批准）**——补 `v` 前缀（commit 159d806）后仍红，暴露第二层根因：`trivy-action@v0.28.0` 内部 pin 的 `aquasecurity/setup-trivy@v0.2.1` tag 已被上游删除（嵌套 composite 引用失效）；改升 `trivy-action@v0.36.0`（内部改 pin setup-trivy 至 commit SHA / v0.2.6，不再受删 tag 影响；6 个在用输入已核对），commit 978360b 推送后 run 36567189359 **6/6 全绿**。ci.md §3/§4.1 同步修订为最终版并推送。教训：pin 第三方 action 时，嵌套引用链的间接依赖 tag 也可能被上游删除，优先选内部以 SHA pin 依赖的版本。
