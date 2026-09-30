@@ -1,0 +1,27 @@
+{
+  "name": "evt_door_close",
+  "description": "上行物理事件：门关 + 仓内电池识别结果。事件的 eventType 放在 data 里而非 cmd 字段（协议 §5.1），因此签名基串的 cmd 段为空串 —— 缺失字段以空串参与，避免\"省略字段\"绕过校验。",
+  "masterSecret": "golden-shared-master-secret",
+  "envelope": {
+    "v": "1.0",
+    "msgId": "01JZGOLDENSAMPLE0000000002",
+    "issuedAt": 1790000012000,
+    "expireAt": 1790000072000,
+    "nonce": "golden-nonce-0002",
+    "traceId": "order:9001:step:2:WAIT_INSERT",
+    "sessionId": "s-golden-session-1",
+    "from": "SWAP-CAB-8::CAB0000001",
+    "seq": 2,
+    "data": {
+      "batteryCode": "BAT0000001",
+      "eventType": "door_close",
+      "magnet": "CLOSED",
+      "slotNo": 3,
+      "soc": 12
+    }
+  },
+  "expected": {
+    "canonicalData": "{\"batteryCode\":\"BAT0000001\",\"eventType\":\"door_close\",\"magnet\":\"CLOSED\",\"slotNo\":3,\"soc\":12}",
+    "signBasePrefix": "\n01JZGOLDENSAMPLE0000000002\n1790000012000\n1790000072000\ngolden-nonce-0002\n"
+  }
+}

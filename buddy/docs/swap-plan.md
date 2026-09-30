@@ -45,7 +45,12 @@
 **M0 验证门**：迁移表中每个 `(state, event)` 都能在 ①DDL 枚举 ②协议指令矩阵 ③模拟器故障目录 中找到落点，反向亦然；不一致即测试失败。
 > 这条测试的价值：三张纸各写各的一定时会互不认账，而这类偏差在编码期表现为"这个事件没人处理"。
 
-### M1 · 设备接入双轨
+### M1 · 设备接入双轨 —— ✅ 已交付（2026-09-30）
+
+> **Broker 选型更正**：原计划写“Vert.x MQTT / Moquette 两选一”，实测 Moquette 0.17 对 MQTT 5 CONNECT
+> 回的 CONNACK 无法被标准 v5 客户端解码，已固定采用 **Vert.x MQTT Server**（详见 ROADMAP §4 与本文 §7 A3）。
+> 协议同步修正两处：§6 步序改为“msgId 去重优先于 nonce”；§3.2 不再由 Broker 注入 `brokerTs`，
+> 改由签名信封内的 `issuedAt/expireAt` 承载有效期（避免绑到单一 Broker 的属性转发能力）。
 
 - **云侧**：嵌入式 Java Broker（Vert.x MQTT）、信封编解码与 `PayloadCodec` SPI、`sessionId` 会话隔离、在线双源防抖判定、指令分发 + ACK + 超时双保险、上行 10 步校验链与去重、`TelemetryStore` 端口 + MySQL 分区表、版本化物模型校验、`raw_payload` 留存、Transactional Outbox。
 - **设备侧 L1**：注册入网取密钥、连接、遥测/事件上报、收指令回 ACK、**完整 §6 校验链**（验签/去重/过期/重放/seq）、最小柜内物理模型（门/锁/电池/SOC 爬升）、`swap_result` 生成；**同步实现 FI-01/02/04/10/13**（验收必需能力，非临时脚手架）。
@@ -174,6 +179,13 @@ M0 ──► M1 ──► M2 ──► M3 ─┬─► M4 ──► M6
 
 ## 9. 变更日志
 
+- 2026-09-30：**M1 整阶段交付**。云侧新增 `framework/iot`（transport/envelope/security/repo/command/session/telemetry/model/maintenance/error/config）、
+  `framework/event`（Outbox 写入与投递 + Redis Stream 分发端口）、`framework/statemachine`（骨架 + 4 项行为测试）；
+  新增独立工程 `buddy-sim`（零代码共享的设备侧实现：协议、十步校验链、柜机物理模型、5 项故障注入、CLI）
+  与仓库根 `protocol/v1/samples/`（3 份跨端 golden 样本，两侧各自独立断言）；CI 新增 `device-sim` 与 `protocol-interop`（mosquitto 第三方裁判）两个 job。
+  自证：`buddy` `mvn verify` **120 用例全绿 + JaCoCo 达标**（含 5 个真 TCP 指令总线用例、4 个 golden 契约用例、7 个接入层用例）；
+  `buddy-sim` 15 用例全绿；真库档 `MysqlConsistencyTest` 3 用例全绿；前端 12/12 绿。
+  过程中两个由测试抓出来的真 bug：设备侧 `!putIfAbsent(...)` 导致 NPE；校验链步序错误会把 QoS1 正常重投当成攻击拒绝并**不回应答**（已反向修正协议 §6）。
 - 2026-09-29：**M0 收口（M0-4 定稿）**——新增 `buddy/docs/swap-member-auth.md` 与 `V12__member_auth`（`member_session` / `member_sms_code` / `member_realname`，3 张表 + 3 条生成列不变式 + `member_user` 补列 + 3 个权限码）。
   核心约束：“**串域必须返回 401 而不是 403**”——403 意味着已进入后台权限判定路径（串域前兆），401 意味着在分派阶段就被拒；该区分可直接断言，因此成为可自证的安全约束而非口头承诺。
   令牌：独立密钥（缺失即启动失败）+ access 2h / refresh 30 天一次性轮换 + **复用检测即整族撤销**；多设备类型并存、同类型互斥（DB 生成列）。

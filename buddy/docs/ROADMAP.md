@@ -147,5 +147,18 @@
   新增 `EndpointRegistry`（本节点端点表 + Redis 路由记录，重连时旧连接的关闭回调不能误新会话）、
   `DeviceSessionService`（ONLINE/STALE/OFFLINE 三态 + 连续多轮静默才判离线，不信 LWT）。
   自证：`mvn test` **107 用例全绿（0 fail / 0 skip）**，其中 `IotTransportTest` 5 个为真 TCP 集成用例。
+- 2026-09-30：**swap M1 整阶段完成（设备接入双轨）**——
+  云侧：`framework/iot`（transport / envelope / security / repo / command / session / telemetry / model / maintenance / error / config）
+  + `framework/event`（Outbox 与 Redis Stream 分发）+ `framework/statemachine`（骨架）；接入层统一走 JdbcTemplate（避开全局逻辑删除与复合主键）。
+  设备侧：新建独立工程 **`buddy-sim`**（零代码共享：自带协议实现、十步校验链、柜机物理模型、5 项故障注入、CLI）
+  + 仓库根 **`protocol/v1/samples/`**（3 份跨端 golden 样本，两侧各自独立断言，两侧都对才算约定成立）。
+  CI：新增 `device-sim` 与 `protocol-interop`（mosquitto 当第三方裁判，防“自研 server 与自研 client 彼此自洽但不合标准”）。
+  设计反向修正两处（均因实测/测试发现，不是改口）：协议 §6 步序改为 **msgId 去重优先于 nonce**
+  （否则 QoS1 正常重投会被当攻击拒绝且不回应答，云侧误判超时）；§3.2 **不再由 Broker 注入 brokerTs**
+  （有效期改由签名信封内的 issuedAt/expireAt 承载，否则绑死单一 Broker 的属性转发能力）。
+  自证：`buddy` **120 用例全绿 + JaCoCo 达标**；`buddy-sim` 15 用例全绿；真库档 3 用例全绿；前端 12/12 绿；
+  其中 M1 新增的真实链路证据：正确口令连入并分发留痕、错口令拒、重复 msgId 只分发一次、伪造签名不分发并留 E1001、
+  越权订阅被 ACL 拒、指令下发-应答-超时-迟到应答纠正、跨用例唯一约束隔离、模拟器自身校验链 10 项。
+  两个由测试抽出的真 bug已修：`!putIfAbsent(...)` NPE；nonce 与幂等检查顺序倒置。
 - 2026-09-29：**CI 结果核查与文档备案（用户要求）**——用 gh CLI 直连核查首次完整流水线（run 36565377941 · `225a079`）：`backend`/`frontend`/`mysql-consistency`/`e2e`/`docker` 五 job 全绿（其中 docker 为新增 job 首跑通过），唯一红为 `security-scan`——根因：`aquasecurity/trivy-action@0.28.0` 引用缺 `v` 前缀（该库 tag 为 `vX.Y.Z`，`0.28.0` ref 实测 404；修复过程见下条）。新增 `buddy/docs/ci.md`：流水线全景 / gh 查看与重跑手册 / 已知问题与修复 / 异地（服务器）能力对齐要点（不含任何凭据），README 文档索引同步。
 - 2026-09-29：**security-scan 修复闭环（用户批准）**——补 `v` 前缀（commit 159d806）后仍红，暴露第二层根因：`trivy-action@v0.28.0` 内部 pin 的 `aquasecurity/setup-trivy@v0.2.1` tag 已被上游删除（嵌套 composite 引用失效）；改升 `trivy-action@v0.36.0`（内部改 pin setup-trivy 至 commit SHA / v0.2.6，不再受删 tag 影响；6 个在用输入已核对），commit 978360b 推送后 run 36567189359 **6/6 全绿**。ci.md §3/§4.1 同步修订为最终版并推送。教训：pin 第三方 action 时，嵌套引用链的间接依赖 tag 也可能被上游删除，优先选内部以 SHA pin 依赖的版本。

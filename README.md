@@ -28,6 +28,9 @@ sx/
 │   └── src/main/resources/
 │       ├── db/migration/    Flyway 版本化迁移 V1–V6（sys 基座 + barrier 样例 + tenant）
 │       └── mapper/          MyBatis XML（framework/modules 的 sys/notice）
+├── buddy-sim/             ◈ 虚拟设备工程（换电柜协议的规范性设备实现，独立产物、不进生产 jar）
+│   └── src/main/java/com/lrs/sim/   协议 / 十步校验链 / 柜机物理模型 / 故障注入 / CLI
+├── protocol/              ◈ 跨端共享数据资产（golden 报文样本；两侧各自读同一份文件做断言，不共享代码）
 ├── buddy-ui/              前端管理台（Vue 3 + Element Plus + Pinia + Vite）
 │   └── src/
 │       ├── api/biz/         ★ 样例业务 API（barrier.ts）；其余 api/ 为框架通用接口
@@ -79,6 +82,9 @@ sx/
 | 接口文档 | OpenAPI 3 / Swagger UI（生产环境自动关闭） | `framework/config/OpenApiConfig` |
 | 异步 | 线程池 + `TaskDecorator` 传播 user/tenant/security 上下文 | `framework/config/AsyncConfig` |
 | 可观测 | Actuator（health/info/metrics/prometheus）、UTF-8 日志、滚动策略 | `application-prod.yml` |
+| 设备接入 | 嵌入式 MQTT Broker（Vert.x）、连接口令认证 + 报文级 HMAC 签名、主题级 ACL、会话与在线双源判定、指令总线（ACK/超时双保险/非法迁移拦截）、上行十步校验链与 DB 去重、遥测端口 + 物模型校验、分区滚动维护 | `framework/iot`（业务无关，可复用） |
+| 可靠事件 | Transactional Outbox（同库同事务）+ 退避重试 + 死信 + 积压指标，分发通道为端口（本地 Redis Stream，生产可换 RocketMQ） | `framework/event` |
+| 状态机 | 迁移表 + 守卫 + 动作 + 非法迁移/条件未满足两类异常（刻意不做可配置状态机） | `framework/statemachine` |
 
 样例 `biz.barrier` 额外演示：**多杆调度**、**三层并发一致性**（进程内分段锁 + 跨实例 ShedLock + `@Version` 乐观锁 CAS）、**端口-适配器**分层（`core` 纯领域 ↔ `infrastructure` 持久化）、策略与杆的 **N:M** 绑定。
 

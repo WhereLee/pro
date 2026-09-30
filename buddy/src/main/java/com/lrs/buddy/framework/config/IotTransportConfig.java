@@ -141,11 +141,17 @@ public class IotTransportConfig {
         return new CloudMqttLink(properties, router, registry, internalClientSecrets);
     }
 
+    /**
+     * 下行网关。云侧链路用 ObjectProvider 延迟取，原因是一个真实的依赖环：
+     * InboundRouter → 监听器 → 指令总线 → DeviceGateway → CloudMqttLink → InboundRouter。
+     * embedded 模式下根本不需要云侧链路，因此也不该在装配期把它拉起来。
+     */
     @Bean
     public DeviceGateway deviceGateway(IotProperties properties, EndpointRegistry endpoints,
-                                       StringRedisTemplate redisTemplate, CloudMqttLink link) {
+                                       StringRedisTemplate redisTemplate,
+                                       org.springframework.beans.factory.ObjectProvider<CloudMqttLink> linkProvider) {
         return properties.isClientMode()
-                ? new Gateways.External(link)
+                ? new Gateways.External(linkProvider.getObject())
                 : new Gateways.Embedded(endpoints, redisTemplate);
     }
 

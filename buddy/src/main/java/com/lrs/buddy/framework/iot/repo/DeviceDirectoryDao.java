@@ -158,6 +158,23 @@ public class DeviceDirectoryDao {
         }
     }
 
+    /** 取已发布物模型的 spec_json（取版本号最大的一条）；缺失返回 null，调用方跳过校验而不是报错。 */
+    public String findThingModelSpec(String productKey) {
+        List<String> list = jdbc.queryForList("SELECT spec_json FROM iot_thing_model WHERE product_key = ? "
+                + "AND state = 'PUBLISHED' AND del_flag = 0 ORDER BY model_version DESC LIMIT 1",
+                String.class, productKey);
+        return list.isEmpty() ? null : list.get(0);
+    }
+
+    /** 阈值默认值漂移校验用：拉出站点上冗余的型号默认值与当前型号值。 */
+    public List<java.util.Map<String, Object>> thresholdDriftRows() {
+        return jdbc.queryForList("""
+                SELECT s.id AS site_id, s.product_key, s.product_min_soc AS site_copy, p.min_soc AS product_value
+                FROM swap_site s JOIN iot_product p ON p.product_key = s.product_key
+                WHERE s.del_flag = 0 AND p.del_flag = 0 AND s.product_min_soc <> p.min_soc
+                """);
+    }
+
     private static String nullableString(ResultSet rs, String column) throws SQLException {
         long value = rs.getLong(column);
         return rs.wasNull() ? null : String.valueOf(value);

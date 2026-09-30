@@ -54,8 +54,8 @@ public class DeviceSecrets {
         return CryptoUtil.equalsConstantTime(sign(msgSecret, envelope), envelope.sign());
     }
 
-    /** 签名基串：缺失字段以空串参与，避免"省略字段"绕过校验。包内可见以便跨端一致性测试。 */
-    String signBase(Envelope envelope) {
+    /** 签名基串：缺失字段以空串参与，避免"省略字段"绕过校验；跨端一致性测试直接调用。 */
+    public String signBase(Envelope envelope) {
         String digest = sha256Hex(codec.canonicalData(envelope.data()));
         return nullToEmpty(envelope.cmd()) + "\n"
                 + nullToEmpty(envelope.msgId()) + "\n"

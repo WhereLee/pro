@@ -1,0 +1,27 @@
+{
+  "name": "cmd_reply_expired",
+  "description": "设备应答：指令已过期被拒（协议 §6 第 5 步、§8 E1003）。relatedCmdId 指向被拒的原指令，云侧据此把原指令置 EXPIRED 终态而不是重试 —— 副作用指令重发等于再开一次门。",
+  "masterSecret": "golden-shared-master-secret",
+  "envelope": {
+    "code": "E1003",
+    "cmd": "OPEN_SLOT",
+    "data": {
+      "cmdId": "01JZGOLDENSAMPLE0000000001",
+      "detail": "EXPIRED_BEFORE_EXECUTE",
+      "now": 1790000099000
+    },
+    "expireAt": 1790000090000,
+    "from": "SWAP-CAB-8::CAB0000001",
+    "issuedAt": 1790000030000,
+    "msgId": "01JZGOLDENSAMPLE0000000003",
+    "nonce": "golden-nonce-0003",
+    "seq": 3,
+    "sessionId": "s-golden-session-1",
+    "traceId": "order:9001:step:1:OPEN_RETURN",
+    "v": "1.0"
+  },
+  "expected": {
+    "canonicalData": "{\"cmdId\":\"01JZGOLDENSAMPLE0000000001\",\"detail\":\"EXPIRED_BEFORE_EXECUTE\",\"now\":1790000099000}",
+    "signBasePrefix": "OPEN_SLOT\n01JZGOLDENSAMPLE0000000003\n1790000030000\n1790000090000\ngolden-nonce-0003\n"
+  }
+}
