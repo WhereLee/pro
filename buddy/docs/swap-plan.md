@@ -119,8 +119,21 @@
 >    C 端过滤器每请求查会话有效性（不查则已签发的 access 在自然过期前继续可用，“强制下线”停留在纸面）。
 >    同时补上换电 guard 的实名强制（`REALNAME_NOT_VERIFIED`）。
 >
-> **待做**：C 端 H5 页面（找柜→建单→进度→结果，四屏，“未知”不得显示为失败）、后台管理页与人工干预、
-> I1–I10 逐条实证收尾、跨进程联跑进 CI。
+> ⑩b **C 端 H5 主链路（B2）**：后端 `DisplayState`（订单态→展示态的**唯一**映射处）+
+> `MemberSwapService`/`MemberSwapController`（找柜/建单/进度/开仓/声明已关门）；
+> 前端 `api/member.ts`（独立 axios 实例与独立令牌存储，**不复用后台 request**，
+> 否则会员 401 会把管理员会话一起登出）、`views/h5/login.vue` + `swap.vue`（四屏：找柜→确认→进度→结果）、
+> `views/h5/display.ts`（纯函数， tone→样式/按钮/轮询）、路由 `/h5/**` 分支、Vitest 6 例 + Playwright 3 例。
+>    **关键约束落在哪一层**：“未知不得显示为失败”同时钉在后端（`MemberSwapViewTest` 断 `tone=warn` 与
+>    `canReorder=false`）与前端（`display.spec.ts` 断 `isFailureLike('warn')===false`），
+>    并约定页面**不得用文案字符判断失败**（只能看 tone）。
+>    两个真实修正：柜机概况的“可取仓”必须用 `slot_state='IDLE_CHARGING'`（`FULL` 是 charge_state，
+>    写错会让列表永远计 0，正是 `SlotAllocator` 注释里警告过的坑）；新会员额度为 0 不得换电是**正确领域行为**
+>    （套餐购买属 M4），页面必须先引导实名与提示额度不足，而不是绕过 guard。
+>    地图/经纬度属外部硬约束，找柜先按站点列出（已标注）。
+>
+> **待做**：后台管理页与人工干预（双人复核）、I1–I10 逐条实证收尾、跨进程联跑进 CI、
+> M4 的套餐购买（目前新会员额度为 0，由测试直接授予）。
 
 台账（站点/柜机/仓位/电池）→ 订单 + 步骤双状态机 → 分配策略（硬门槛 + 3 档优先级链 + 同人连续分配惩罚）→ 物理事件匹配器 → `swap_result` 交叉核对 → **四层并发**（柜分段锁 + ShedLock + `@Version` CAS + DB 生成列唯一约束）→ C 端 H5 主链路 → 后台管理页。
 

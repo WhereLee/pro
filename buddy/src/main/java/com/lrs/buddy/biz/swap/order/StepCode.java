@@ -43,6 +43,23 @@ public enum StepCode {
         return expectEvent;
     }
 
+    /**
+     * 给用户看的一步叫什么。
+     *
+     * 文案放在枚举而不是前端：进度条上的“打开归还仓/取出新电池”必须与后端推进的语义同源，
+     * 前端自己拍一份就会在步骤改名时错位。
+     */
+    public String userLabel() {
+        return switch (this) {
+            case OPEN_RETURN -> "打开归还仓";
+            case WAIT_INSERT -> "放入旧电池并关好仓门";
+            case VERIFY_RETURN -> "核验电池";
+            case UNLOCK_OFFER -> "开取电仓";
+            case WAIT_TAKE -> "取出新电池并关好仓门";
+            case SETTLE -> "完成结算";
+        };
+    }
+
     public int deadlineSeconds() {
         return deadlineSeconds;
     }

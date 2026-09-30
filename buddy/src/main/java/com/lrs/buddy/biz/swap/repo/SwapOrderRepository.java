@@ -548,6 +548,90 @@ public class SwapOrderRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    // ---------------- C 端展示需要的读模型 ----------------
+
+    public OrderRow findInfightByUser(long userId) {
+        List<OrderRow> rows = jdbc.query("SELECT id, order_no, user_id, site_id, cabinet_id, return_slot_no, "
+                        + "offer_slot_no, return_battery_id, offer_battery_id, order_state, right_state, tenant_id "
+                        + "FROM swap_order WHERE active_user = ?", ORDER_ROW, userId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * 柜机概况：可用归还仓数与可取满电仓数。
+     *
+     * 门槛与 {@code SlotAllocator} 的硬门槛保持同一组字段：
+     * 可取仓的仓位态是 **IDLE_CHARGING**（不是 IDLE_FULL —— `FULL` 是 charge_state，
+     * 把当成 slot_state 写会永远匹不上，症状是“柜里明明有满电仓却计数为 0”）；
+     * 可归还仓的仓位态是 IDLE_EMPTY 且门关锁好。
+     */
+    public Map<String, Object> cabinetOverview(String cabinetNo, int minSoc) {
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT c.id AS cabinet_id, c.cabinet_no, c.site_id, c.slot_count, c.cabinet_state,
+                       d.online_state, d.device_row_id,
+                       (SELECT COUNT(*) FROM swap_slot s WHERE s.cabinet_id = c.id AND s.del_flag = 0
+                            AND s.slot_state = 'IDLE_EMPTY' AND s.door_state = 'CLOSED'
+                            AND s.lock_state = 'LOCKED' AND s.disabled_flag = 0) AS free_return_slots,
+                       (SELECT COUNT(*) FROM swap_slot s JOIN swap_battery b ON b.id = s.battery_id
+                            AND b.del_flag = 0 WHERE s.cabinet_id = c.id AND s.del_flag = 0
+                            AND s.slot_state = 'IDLE_CHARGING' AND s.disabled_flag = 0
+                            AND b.soc >= ? AND b.soh >= 80 AND b.fault_code IS NULL) AS ready_offer_slots
+                FROM swap_cabinet c JOIN iot_device d ON d.id = c.device_row_id AND d.del_flag = 0
+                WHERE c.cabinet_no = ? AND c.del_flag = 0
+                """, minSoc, cabinetNo);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 可用柜机列表（在线 + 状态正常 + 至少一个可取满电仓）。地图/经纬度属外部硬约束，先按站点列出。 */
+    public List<Map<String, Object>> availableCabinets(int minSoc, int limit) {
+        // 过滤不能引用 SELECT 里的别名（`ready_offer_slots > 0` 在 MySQL 与 H2 都非法），
+        // 只能把同一个子查询再写一次进 WHERE；宁可重复也不靠“方言恰好支持”偷安。
+        return jdbc.queryForList("""
+                SELECT c.cabinet_no, c.site_id, c.slot_count, d.online_state,
+                       (SELECT COUNT(*) FROM swap_slot s WHERE s.cabinet_id = c.id AND s.del_flag = 0
+                            AND s.slot_state = 'IDLE_EMPTY' AND s.door_state = 'CLOSED'
+                            AND s.disabled_flag = 0) AS free_return_slots,
+                       (SELECT COUNT(*) FROM swap_slot s JOIN swap_battery b ON b.id = s.battery_id
+                            AND b.del_flag = 0 WHERE s.cabinet_id = c.id AND s.del_flag = 0
+                            AND s.slot_state = 'IDLE_CHARGING' AND s.disabled_flag = 0
+                            AND b.soc >= ? AND b.soh >= 80 AND b.fault_code IS NULL) AS ready_offer_slots
+                FROM swap_cabinet c JOIN iot_device d ON d.id = c.device_row_id AND d.del_flag = 0
+                WHERE c.del_flag = 0 AND c.cabinet_state = 'NORMAL' AND d.online_state = 'ONLINE'
+                  AND (SELECT COUNT(*) FROM swap_slot s2 JOIN swap_battery b2 ON b2.id = s2.battery_id
+                            AND b2.del_flag = 0 WHERE s2.cabinet_id = c.id AND s2.del_flag = 0
+                            AND s2.slot_state = 'IDLE_CHARGING' AND s2.disabled_flag = 0
+                            AND b2.soc >= ? AND b2.soh >= 80 AND b2.fault_code IS NULL) > 0
+                ORDER BY c.site_id, c.cabinet_no LIMIT ?
+                """, minSoc, minSoc, Math.max(1, Math.min(limit, 50)));
+    }
+
+    /** 本单的可取回权益流水（C 端“上一笔结果”需要）。 */
+    public List<Map<String, Object>> rightSnapshot(long memberId) {
+        return jdbc.queryForList("SELECT times_total, times_used, times_occupied, valid_until, freeze_state "
+                + "FROM swap_right_account WHERE member_id = ? AND del_flag = 0", memberId);
+    }
+
+    private static final org.springframework.jdbc.core.RowMapper<OrderRow> ORDER_ROW =
+            (rs, i) -> new OrderRow(rs.getLong("id"), rs.getString("order_no"), rs.getLong("user_id"),
+                    rs.getLong("site_id"), rs.getLong("cabinet_id"), nullableInt(rs, "return_slot_no"),
+                    nullableInt(rs, "offer_slot_no"),
+                    rs.getObject("return_battery_id") == null ? null : rs.getLong("return_battery_id"),
+                    rs.getObject("offer_battery_id") == null ? null : rs.getLong("offer_battery_id"),
+                    rs.getString("order_state"), rs.getString("right_state"), rs.getLong("tenant_id"));
+
+    /**
+     * 列表页"可取仓数"的 SOC 门槛。
+     *
+     * 从 `swap_site` 读而不是写死 80：建单时分配引擎用的就是同一来源，
+     * 写一个常量就是第二份真相（站点门槛收紧后列表会虚高）。
+     * 列表只是概览数字，能不能成单仍由建单时的分配引擎裁决。
+     */
+    public int defaultOfferMinSoc() {
+        Integer minSoc = jdbc.queryForObject("SELECT COALESCE(MIN(product_min_soc), 80) FROM swap_site "
+                + "WHERE del_flag = 0", Integer.class);
+        return minSoc == null ? 80 : minSoc;
+    }
+
     private static String firstNonBlank(String a, String b) {
         if (a != null && !a.isBlank()) {
             return a;

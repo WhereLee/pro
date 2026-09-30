@@ -180,6 +180,23 @@
   症状是测试挂住而不是报错）—— 同一个坑两次在不同代码里重现，证明它值得写进文档而不只是注释。
   自证：`buddy-sim` **20 用例全绿**（原 15 + 新 5）；`buddy` **120 用例全绿 + JaCoCo 达标**。
   仍未做：两个独立进程的跨进程联跑（属 M3 混沌/场景 DSL 范畴），以及设备注册接口取密钥（M2）。
+- 2026-09-30：**M2 第 8 批（B2）：C 端 H5 主链路**——
+  后端 `DisplayState`（订单态→展示态的唯一映射，漏登记直接抛）+ `MemberSwapService`/`MemberSwapController`；
+  前端独立 `api/member.ts`（独立 axios 实例 + 独立令牌存储 + 401 时先用 refresh 换一次并重试，只重试一次）、
+  `views/h5/login.vue`、`views/h5/swap.vue`（找柜→确认→进度→结果）、`views/h5/display.ts`（纯函数层）、
+  路由 `/h5/**` 用自己的令牌判定。
+  为什么单独一个 axios 实例：后台实例 401 时会清 admin 会话 + 卸动态路由 + 跳 /login，
+  共用的后果是**会员令牌过期会把管理员一起登出**。
+  “未知不得显示为失败”钉两层：后端测 `tone=warn` 与 `canReorder=false`（未知态不给“再来一单”），
+  前端测 `isFailureLike` 只认 tone 不认文案；页面约定不得用 `label.includes('失败')` 判断。
+  本批自己犯的错：① 把 `FULL` 当 `slot_state` 写进柜机概况 SQL（可取仓永远计 0，
+  而这正是 `SlotAllocator` 注释里警告过的坑）；② SELECT 别名写进 WHERE（MySQL/H2 都非法，
+  改成重复子查询而不是赌方言支持）；③ 往生成列插值；④ 测试断言 `/h5/login?redirect=` 反而匹配了
+  `/login?redirect=` 的反向断言（正向断言才是对的）。
+  新会员额度为 0 被 guard 拒是**正确领域行为**（套餐购买属 M4），测试里显式授予并写明原因，
+  而不是把 guard 改松。
+  自证：后端 `mvn verify` **203 用例全绿 + JaCoCo 达标**（新增 `MemberSwapViewTest` 6 例），
+  前端 `vue-tsc` + `vitest` **18 例全绿**，本地起真后端跑 Playwright `h5.spec.ts` **3 例全绿**。
 - 2026-09-30：**M2 第 7 批（B1）：C 端身份域（member realm）**——
   `MemberTokens`（独立密钥，缺失即启动失败）、`MemberJwtAuthenticationFilter`、`MemberSecurityConfig`
   （独立 @Order(2) 过滤链，后台主链改 @Order(3)）、`MemberAuthService`、`MemberAuthController`、

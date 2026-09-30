@@ -1,12 +1,15 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { usePermissionStore } from '@/store/permission'
+import { memberTokenStore } from '@/api/member'
 import { ElMessage } from 'element-plus'
 
 const Layout = () => import('@/layout/index.vue')
 
-/** 无需登录即可访问的路由 */
+/** 无需登录即可访问的路由（后台） */
 const WHITE_LIST = ['/login']
+/** C 端 H5 自己的免登录路径 */
+const H5_WHITE_LIST = ['/h5/login']
 
 /**
  * 静态路由：所有登录用户都可见。
@@ -22,6 +25,20 @@ export const constantRoutes: RouteRecordRaw[] = [
     path: '/404',
     component: () => import('@/views/error/404.vue'),
     meta: { hidden: true }
+  },
+  // C 端 H5：不进后台 Layout（不能带侧边栏/菜单/SSE），也不走动态权限路由。
+  // 两个域共用一个前端产物，但路由与令牌彼此完全隔开。
+  {
+    path: '/h5/login',
+    name: 'H5Login',
+    component: () => import('@/views/h5/login.vue'),
+    meta: { hidden: true, title: '换电登录' }
+  },
+  {
+    path: '/h5/swap',
+    name: 'H5Swap',
+    component: () => import('@/views/h5/swap.vue'),
+    meta: { hidden: true, title: '换电' }
   },
   {
     path: '/',
@@ -46,6 +63,21 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to, _from, next) => {
+  // C 端分支：用自己的令牌判定，绝不能复用后台那套（拉菜单/校权限）。
+  // 混用的后果是：会员没登录就被踢到后台登录页，而后台登录页并不认 member 令牌。
+  if (to.path.startsWith('/h5')) {
+    if (H5_WHITE_LIST.includes(to.path)) {
+      next()
+      return
+    }
+    if (!memberTokenStore.loggedIn) {
+      next({ path: '/h5/login', query: { redirect: to.fullPath }, replace: true })
+      return
+    }
+    next()
+    return
+  }
+
   const userStore = useUserStore()
   const permissionStore = usePermissionStore()
 
