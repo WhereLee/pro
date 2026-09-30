@@ -286,6 +286,19 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: '1'
+          format: json
+          # 必须落 JSON：table 格式在表体较长时容易被日志截断，
+          # “知道有 1 个 CRITICAL 但不知道是哪个包”无法修复，只能猜（本条曾因猜 netty 白跑一轮）。
+          output: trivy-critical.json
+      - name: Print offending packages (for diagnosis)
+        if: always()
+        run: |
+          if [ -f trivy-critical.json ]; then
+            jq -r '.Results[]? | select(.Vulnerabilities) | .Vulnerabilities[]?
+                  | "[\(.Severity)] \(.PackageName) @ \(.PkgVersion) -> \(.VulnerabilityID) fixed by \(.FixedVersion // "n/a")"' trivy-critical.json | head -40
+          else
+            echo "no trivy json output produced"
+          fi
       - name: Trivy secret scan (advisory · non-blocking)
         if: always()
         uses: aquasecurity/trivy-action@v0.36.0
