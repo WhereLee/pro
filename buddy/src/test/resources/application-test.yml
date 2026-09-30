@@ -28,6 +28,12 @@ barrier:
 # 设备接入层默认关闭：Broker 会占 1883 端口，并发跑多测试类时端口冲突会变成不可复现的随机红。
 # 需要真实 Broker 的用例自己开（IotTransportTest 用独立随机端口 + 显式 enabled=true）。
 buddy:
+  # C 端域：测试固定密钥（与后台不同），实名与验证码走 mock 开关以便跑完全链路
+  member:
+    jwt-secret: test-only-member-jwt-secret-key-32bytes-min!!
+    phone-pepper: test-only-phone-pepper-32bytes-minimum-len!!
+    mock-realname-auto-approve: true
+    mock-sms-echo-code: true
   iot:
     enabled: false
 

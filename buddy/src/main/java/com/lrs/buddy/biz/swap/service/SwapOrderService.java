@@ -212,6 +212,10 @@ public class SwapOrderService {
             reasons.add("MEMBER_" + member.state());
         } else if (member.riskFlag() != null && member.riskFlag() == 1) {
             reasons.add("MEMBER_RISK_FLAG");
+        } else if (!"VERIFIED".equals(member.realnameState())) {
+            // 实名强制：换电是把“可上路行驶的电池 + 可追人责任”交给用户，
+            // 未实名先给电池等于事后无法追责，事后补实名补不回来
+            reasons.add("REALNAME_" + member.realnameState());
         }
         if (!"NORMAL".equals(cabinet.cabinetState())) {
             reasons.add("CABINET_" + cabinet.cabinetState());

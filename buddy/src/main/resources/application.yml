@@ -97,6 +97,21 @@ buddy:
       - txt
       - csv
       - zip
+  # ========== C 端会员（member 域）=========
+  # 密钥与后台完全分离（缺失或过短时 MemberTokens 直接使启动失败，不给默认值）：
+  # 共用密钥时两类令牌在密码学上不可区分，“串域”只能靠路径判断兜，新接口挂错路径就越权。
+  # 约束：串域必须 401而不是 403（在分派阶段就被拒，而不是进入后台权限判定）。
+  member:
+    jwt-secret: ${BUDDY_MEMBER_JWT_SECRET:}
+    access-token-seconds: 7200
+    refresh-token-days: 30
+    # 手机号/身份证只存 HMAC 摘要（供唯一不等值查询）与密文（供业务读取），不存明文
+    phone-pepper: ${BUDDY_MEMBER_PHONE_PEPPER:}
+    # 无真实实名通道（外部硬约束）：开发/CI 下自动通过；生产必须置 false 并走后台审核
+    mock-realname-auto-approve: ${BUDDY_MEMBER_MOCK_REALNAME:false}
+    # MOCK 短信通道下把验证码随响应返回以便联调；接真实通道后必须置 false（否则等于短信作废）
+    mock-sms-echo-code: ${BUDDY_MEMBER_SMS_ECHO:false}
+
   # ========== 设备接入层（framework/iot）==========
   # 本地/CI 用嵌入式 Vert.x MQTT Broker（无 Docker 也能实证）；生产可前置 EMQX（mode=client），协议不变。
   #

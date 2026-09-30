@@ -108,8 +108,19 @@
 >    ② 步骤事件映射只看目标态 → `DISPATCHED→DISPATCHED`（重发）被错配成 `DISPATCHED` 事件判非法；
 >    ③ `CREATED` 指令的超时被强推成 `TIMEOUT`——语义上应是 `EXPIRED`（零物理动作），两者不能混。
 >
-> **待做**：I1–I10 逐条实证（超时/反查路径已覆盖 I4/I5/I6/I7/I8 的部分，剩下的要逐条钉）、
-> C 端 H5、后台页、跨进程联跑 CI。
+> ⑩ **C 端身份域（member realm，B1）**：`MemberTokens` + `MemberJwtAuthenticationFilter` +
+> `MemberSecurityConfig`（@Order(2) 独立过滤链，后台主链改为 @Order(3)）+ `MemberAuthService` +
+> `MemberAuthController`。能力：手机号+验证码注册即登录、access/refresh 双令牌、会话族顶号互斥、
+> refresh 轮换与复用检测、登出、实名提交。
+>    **顺序调整声明**：member 域原属 M4，这里提前是因为 C 端页面必须有真鉴权——
+>    用 header 传 memberId 的“演示态登录”等于交付一个未鉴权的 C 端接口，这不是简化而是假。
+>    三个实现约定：串域一律 401（两域密钥不同，在验签阶段就失败）；一次性验证码用 CAS 更新而非先查后改；
+>    **复用检测的整族撤销走 `REQUIRES_NEW`**（同事务的撤销会被紧接着抛出的异常回滚掉，等于没撤销）。
+>    C 端过滤器每请求查会话有效性（不查则已签发的 access 在自然过期前继续可用，“强制下线”停留在纸面）。
+>    同时补上换电 guard 的实名强制（`REALNAME_NOT_VERIFIED`）。
+>
+> **待做**：C 端 H5 页面（找柜→建单→进度→结果，四屏，“未知”不得显示为失败）、后台管理页与人工干预、
+> I1–I10 逐条实证收尾、跨进程联跑进 CI。
 
 台账（站点/柜机/仓位/电池）→ 订单 + 步骤双状态机 → 分配策略（硬门槛 + 3 档优先级链 + 同人连续分配惩罚）→ 物理事件匹配器 → `swap_result` 交叉核对 → **四层并发**（柜分段锁 + ShedLock + `@Version` CAS + DB 生成列唯一约束）→ C 端 H5 主链路 → 后台管理页。
 

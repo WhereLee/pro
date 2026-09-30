@@ -180,6 +180,20 @@
   症状是测试挂住而不是报错）—— 同一个坑两次在不同代码里重现，证明它值得写进文档而不只是注释。
   自证：`buddy-sim` **20 用例全绿**（原 15 + 新 5）；`buddy` **120 用例全绿 + JaCoCo 达标**。
   仍未做：两个独立进程的跨进程联跑（属 M3 混沌/场景 DSL 范畴），以及设备注册接口取密钥（M2）。
+- 2026-09-30：**M2 第 7 批（B1）：C 端身份域（member realm）**——
+  `MemberTokens`（独立密钥，缺失即启动失败）、`MemberJwtAuthenticationFilter`、`MemberSecurityConfig`
+  （独立 @Order(2) 过滤链，后台主链改 @Order(3)）、`MemberAuthService`、`MemberAuthController`、
+  `MemberSessionGuardImpl`、`MemberSessionRevoker`。
+  **顺序调整**：member 域原属 M4，因 C 端页面必须有真鉴权而提前；拿 header 传 memberId 的“演示态”
+  等于交付一个未鉴权接口（假，不是简化）。
+  本批最值钱的一条是 **复用检测的整族撤销必须 `REQUIRES_NEW`**：原先同事务里先 UPDATE 再 throw，
+  异常把撤销一起回滚，“检测到令牌被复制就全族失效”实际什么都没发生——
+  是测试断言“新 access 必须 401”把它抓出来的（只断言“接口报错”永远看不出来）。
+  同类修正：C 端过滤器改为每请求校验会话族+jti（否则强制下线/顶号在自然过期前无效）；
+  验证码一次性消费靠 CAS；两域串用一律 401；`pepper` 不再直接当 AES 密钥（派生分离）；
+  生成列（active_key/active_family/active_member）不得出现在 INSERT 里；
+  补上换电 guard 的实名强制（REALNAME_NOT_VERIFIED）。
+  自证：`mvn verify` **197 用例全绿 + JaCoCo 达标**（新增 `MemberAuthTest` 6 例）。
 - 2026-09-30：**M2 第 6 批（A 块）：超时与反查驱动 + 自助恢复（B2）**——
   `SwapTimeoutDriver`（ShedLock 扫 deadline，按 §5.3/§5.4 分岔）、`SwapShadowBridge`
   （`QUERY_STATUS` 应答写 `iot_shadow.reported_json`，不放进框架层是为了不让 framework 反过来认识业务指令码）、

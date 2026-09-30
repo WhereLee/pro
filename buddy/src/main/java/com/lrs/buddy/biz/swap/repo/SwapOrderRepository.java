@@ -49,7 +49,7 @@ public class SwapOrderRepository {
     public record CabinetDeviceRow(Long deviceRowId, String productKey, String deviceId) {
     }
 
-    public record MemberRow(Long id, String state, Integer riskFlag) {
+    public record MemberRow(Long id, String state, Integer riskFlag, String realnameState) {
     }
 
     public record AccountRow(Long id, Long memberId, Integer timesTotal, Integer timesUsed, Integer timesOccupied,
@@ -308,9 +308,10 @@ public class SwapOrderRepository {
     // ---------------- 会员 / 权益 / 柜机 / 候选仓 ----------------
 
     public MemberRow findMember(long userId) {
-        List<MemberRow> rows = jdbc.query("SELECT id, member_state, risk_flag FROM member_user WHERE id = ? "
-                        + "AND del_flag = 0", (rs, i) -> new MemberRow(rs.getLong("id"),
-                rs.getString("member_state"), rs.getInt("risk_flag")), userId);
+        List<MemberRow> rows = jdbc.query("SELECT id, member_state, risk_flag, realname_state FROM member_user "
+                        + "WHERE id = ? AND del_flag = 0",
+                (rs, i) -> new MemberRow(rs.getLong("id"), rs.getString("member_state"), rs.getInt("risk_flag"),
+                        rs.getString("realname_state")), userId);
         return rows.isEmpty() ? null : rows.get(0);
     }
 

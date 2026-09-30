@@ -69,9 +69,16 @@ public class SecurityConfig {
         return http.build();
     }
 
-    /** 主业务链 */
+    /**
+     * 主业务链（后台）。
+     *
+     * <p>@Order(3)：必须排在 C 端链（{@code MemberSecurityConfig} 的 @Order(2)）之后。
+     * 两条链靠 securityMatcher 的匹配集互斥分流，但 Spring Security 是**按 order 逐条尝试**的：
+     * 若本链在前，它会把全部请求（包含 /member/**）都吃进 anyRequest().authenticated()，
+     * 于是 C 端令牌在后台密钥下验不过、返回 401 —— 现场看起来像“C 端登录一直失败”。
+     */
     @Bean
-    @Order(2)
+    @Order(3)
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .cors(cors -> cors.configurationSource(corsConfigurationSource))

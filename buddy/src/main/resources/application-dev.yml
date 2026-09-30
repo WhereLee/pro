@@ -23,3 +23,12 @@ h2:
   console:
     enabled: true
     path: /h2-console
+
+# 开发环境专用的 C 端密钥（仅限 dev）：生产走环境变量注入，
+# 因为 MemberTokens 对空值/短值直接拒绝启动，默认值不会泄漏到 prod。
+buddy:
+  member:
+    jwt-secret: dev-only-member-jwt-secret-please-rotate-me-32b
+    phone-pepper: dev-only-member-phone-pepper-rotate-me-32bytes
+    mock-realname-auto-approve: true
+    mock-sms-echo-code: true
