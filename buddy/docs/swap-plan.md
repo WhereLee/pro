@@ -151,7 +151,18 @@
 >    （本批真把 `c.device_row_id` 写成了 `d.device_row_id`）在任何业务断言里都可能看不出来，
 >    只有真的执行那条 SQL 才红——这是手工冒烟发现的，于是固定成 CI 断言而不是靠人肉起服务。
 >
-> **待做**：I1–I10 逐条实证收尾、跨进程联跑进 CI、M4 的套餐购买（目前新会员额度为 0，由测试直接授予）。
+> ⑪ **不变式逐条实证（I1–I10）+ 跨进程联跑（未闭环）**：
+>    `SwapInvariantTest` 9 例逐条钉住 I1–I10（每条都尽量用"故意违反一次、期望被拒"的写法）。
+>    自查发现并修了两处**文档承诺与实现不一致**：
+>    ① I9 的 per-battery 唯一只有生成列 `active_battery` **没建唯一索引**（V17 补）；
+>    ② I8 的 `swap_compensation` 表建了但**代码里零写入者** → 现在 compensate 逐项落台账，
+>      `ABORTING→ABORTED` 前有真 guard（`countOpenCompensation`），并多了 `finishAborting` 入口给 M3 异步补偿。
+>    另一个发现：`ADMIN_RESOLVE_COMPLETED` 原本在实扣失败时默默放过去（违反 I3），已改为抛异常回滚。
+>    跨进程联跑：模拟器新增 `--auto-swap`/`--device`，脚本 `scripts/cross-process-swap.ps1` 能跑到
+>    “设备上线→建单→S1 下发→柜侧收到并执行”，但**柜侧上行事件云侧收不到**（已列入 ROADMAP §4）；
+>    为此补了最小权益发放接口 `POST /swap/rights/grant`（复用现有码 `member:right:adjust`，不新增）。
+>
+> **待做**：跨进程联跑查因并加 CI 门禁（上述阻塞项）、M4 的套餐购买与支付。
 
 台账（站点/柜机/仓位/电池）→ 订单 + 步骤双状态机 → 分配策略（硬门槛 + 3 档优先级链 + 同人连续分配惩罚）→ 物理事件匹配器 → `swap_result` 交叉核对 → **四层并发**（柜分段锁 + ShedLock + `@Version` CAS + DB 生成列唯一约束）→ C 端 H5 主链路 → 后台管理页。
 

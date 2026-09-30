@@ -681,6 +681,29 @@ public class SwapOrderRepository {
         return total == null ? 0 : total;
     }
 
+    /**
+     * 补偿台账落笔。I8 的可执行形式：“ABORTING→ABORTED” 前必须查得无 PENDING/FAILED 项，
+     * 而能查的前提是每一项都真的被写下来。
+     *
+     * @param state DONE（同步完成）|PENDING（待异步执行）|FAILED（执行失败待重试）|SKIPPED
+     */
+    public void insertCompensation(long id, long orderId, String action, String targetType, Long targetId,
+                                   String state, LocalDateTime now, long tenantId) {
+        jdbc.update("INSERT INTO swap_compensation (id, order_id, action, target_type, target_id, comp_state, "
+                        + "attempts, done_at, create_time, update_time, version, del_flag, tenant_id) "
+                        + "VALUES (?,?,?,?,?,?, 1, ?, ?, ?, 0, 0, ?)",
+                id, orderId, action, targetType, targetId, state,
+                "DONE".equals(state) ? Timestamp.valueOf(now) : null,
+                Timestamp.valueOf(now), Timestamp.valueOf(now), tenantId);
+    }
+
+    /** 未完成的补偿项数（PENDING / FAILED）——I8 的 guard 条件。 */
+    public int countOpenCompensation(long orderId) {
+        Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM swap_compensation WHERE order_id = ? "
+                + "AND comp_state IN ('PENDING','FAILED') AND del_flag = 0", Integer.class, orderId);
+        return n == null ? 0 : n;
+    }
+
     private static String firstNonBlank(String a, String b) {
         if (a != null && !a.isBlank()) {
             return a;

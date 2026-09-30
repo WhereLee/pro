@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -301,18 +302,34 @@ public class SwapFlowService {
      */
     private void abort(SwapOrderRepository.OrderRow order, String reason, LocalDateTime now) {
         compensate(order, reason, now);
+        // I8 的可执行形式：台账里还有 PENDING/FAILED 项就不让进 ABORTED。
+        // 不这样做的话，“已完成补偿”这个字永远包不住信任，M3 的异步补偿一旦排队未执行就丢资产。
+        int open = repo.countOpenCompensation(order.id());
+        if (open > 0) {
+            throw new IllegalStateException("I8：仍有 " + open + " 项补偿未完成，禁止进入 ABORTED");
+        }
         // 补偿先做完再落 ABORTED（I8）：先落终态再慢慢补，会让"已完成"这个字包含不可信
         fireOrder(order.id(), OrderState.ABORTING, OrderEvent.ABORT_DONE, "abort_done", null, null, null);
     }
 
     private void compensate(SwapOrderRepository.OrderRow order, String reason, LocalDateTime now) {
-        repo.releaseReservations(order.id(), reason, now);
+        // 每一项补偿都落台账：没落笔的补偿等于没发生过的补偿，事后无法审计也无法重试
+        List<Map<String, Object>> reservations = repo.reservations(order.id());
+        int released = repo.releaseReservations(order.id(), reason, now);
+        if (released > 0) {
+            reservations.stream()
+                    .filter(row -> "ACTIVE".equals(String.valueOf(row.get("resv_state"))))
+                    .forEach(row -> repo.insertCompensation(IdWorker.getId(), order.id(), "RELEASE_RESERVATION",
+                            "SLOT", ((Number) row.get("slot_id")).longValue(), "DONE", now, order.tenantId()));
+        }
         repo.restoreSlotsOf(order.id(), now);
         if ("OCCUPIED".equals(order.rightState())) {
             SwapOrderRepository.AccountRow account = repo.findAccount(order.userId());
             if (account != null && repo.releaseRightOccupation(account.id())) {
                 repo.insertRightTransaction(IdWorker.getId(), order.userId(), account.id(), order.id(), "RELEASE", -1,
                         null, now, reason, null, order.tenantId());
+                repo.insertCompensation(IdWorker.getId(), order.id(), "RELEASE_RIGHT", "RIGHT", account.id(),
+                        "DONE", now, order.tenantId());
             }
             repo.updateRightState(order.id(), "RELEASED");
         }
@@ -425,9 +442,25 @@ public class SwapFlowService {
         LocalDateTime now = LocalDateTime.now();
         fireOrder(orderId, OrderState.SUSPENDED, OrderEvent.DEADLINE_SUSPENDED, "deadline_suspended",
                 null, null, null);
-        SwapOrderRepository.OrderRow fresh = requireOrder(orderId);
-        compensate(fresh, "SUSPENDED_TIMEOUT", now);
-        fireOrder(orderId, OrderState.ABORTING, OrderEvent.ABORT_DONE, "abort_done", null, null, null);
+        // 走 abort() 而不是自己拼 compensate + ABORT_DONE：I8 的 guard 只有一处实现，
+        // 两处各写一遍就必然出现“一条路径有 guard、另一条没有”的不一致。
+        abort(requireOrder(orderId), "SUSPENDED_TIMEOUT", now);
+    }
+
+    /**
+     * 补偿执行器把最后一项做完后落终态（仍过 I8 guard）。
+     *
+     * 为什么要有这个入口：异步补偿的完成时刻在另一个线程/进程里，那一侧需要一个
+     * “从 ABORTING 推到 ABORTED”的合法入口；没有它，将来只能再写一份 compensate+迁移，
+     * 而两份实现必然出现“一份有 guard、一份没有”。
+     */
+    @Transactional
+    public void finishAborting(long orderId) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        if (!OrderState.ABORTING.name().equals(order.state())) {
+            throw new IllegalStateException("只有在 ABORTING 的单能补偿收尾，当前：" + order.state());
+        }
+        abort(order, "COMPENSATION_DONE", LocalDateTime.now());
     }
 
     // ---------------- 人工干预（双人复核通过后才调用）----------------
@@ -463,11 +496,15 @@ public class SwapFlowService {
                 "admin_resolve_completed", null, null, null);
         SwapOrderRepository.OrderRow fresh = requireOrder(orderId);
         if ("OCCUPIED".equals(fresh.rightState())) {
+            // I3：扣减与“人工判定完成”必须在同一个事务里要么都成、要么都不成。
+            // 扣不动时绝不不得默默放过去：否则订单进了 COMPLETED 而额度仍是预占，
+            // 而本方法已在上面把状态推到 COMPLETED——不抛就会留下一笔“没收到钱但已完成”的单。
             SwapOrderRepository.AccountRow account = repo.findAccount(fresh.userId());
-            if (account != null && repo.deductRight(account.id(), fresh.userId(), orderId, now, null,
+            if (account == null || !repo.deductRight(account.id(), fresh.userId(), orderId, now, null,
                     fresh.tenantId())) {
-                repo.updateRightState(orderId, "DEDUCTED");
+                throw new IllegalStateException("人工判定完成但权益无法实扣（账户不存在或无预占可扣），已回滚");
             }
+            repo.updateRightState(orderId, "DEDUCTED");
         }
         repo.releaseReservations(orderId, "ADMIN_RESOLVE_COMPLETED", now);
         repo.insertDiscrepancy(IdWorker.getId(), "ADMIN-COMP-" + orderId, "FACT_MISSING",

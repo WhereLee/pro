@@ -78,6 +78,7 @@
 | 2026-09-29 | D · Docker 镜像 | 本机环境未安装 Docker，无法本地 `docker build` / `compose up` 实证容器栈（属环境缺失，非尝试失败） | 探测确认无 Docker 运行时 | 交付 `buddy/Dockerfile`+`buddy-ui/Dockerfile`+`docker-compose.yml`+`nginx.conf`+`.env.example`+两份 `.dockerignore`，镜像构建与编排交 CI `docker` job 及目标环境验证 | 本机未跑起容器栈；但 prod profile 已用真实 jar + MySQL 本地实证（Flyway→v6、硬化、鉴权、业务全绿），Dockerfile/compose 经逐项 review |
 | 2026-09-29 | Q · k6 压测 | 本机未安装 k6，脚本无法本地执行出报告 | 探测确认无 k6；改用已装 JMeter 承担压测实证 | 交付 k6 脚本 `load/barrier-race.js`（未本地执行），压测实证由 JMeter 完成（320 样本 0 错误） | k6 脚本未经本地执行验证，压测场景与 JMeter 一致（登录→随机开/合竞态打同一杆） |
 | 2026-09-29 | swap · 技术选型 | 换电柜需 IoT 中间件（EMQX / TDengine / RocketMQ），本机实测**无 Docker**（MySQL 8.0.44 + Redis 5.0.14 + JDK 17 可用），而 EMQX 与 TDengine 3.x 服务端均无 Windows 原生发行版 → 主链路依赖它们就无法本地与 CI 自证 | 逐项核实环境可用性与各中间件的 Windows 支持情况 | 采用“**能力端口化 + 本地可跑等价件 + 生产可换实现**”：嵌入式 Java Broker（Vert.x MQTT / Moquette）、Transactional Outbox + Redis Stream、MySQL 分区表；并刻意**不依赖 Broker 私有特性与离线队列** | 主链路与故障路径均可本机/CI 实证；代价是本地侧不展示真集群。**取舍登记已集中至 `swap-plan.md` §7（A 类我方选择/B 类加严项）；原 8 项已重分类** |
+| 2026-09-30 | M2 · 跨进程联跑 | 两进程联跑时柜侧上行事件（`cmd_reply` / `door_open` / `battery_detected`）**云侧一条都没消费到**，订单卡在 RETURNING。已排除：设备接入与鉴权（online_state=ONLINE）、指令下发（日志“S1 已下发 slot=8”且柜侧确认收到并执行）、柜侧动作（日志“自动动作：投入 BAT-XP-OLD-… 到仓 8”）、Broker 启动（127.0.0.1:1883）、ACL 归属判定（clientId=`product::deviceId` 与主题段一致） | ①提升 `framework.iot`/`biz.swap` 到 DEBUG 复跑（无任何 InboundRouter 痕迹）②查内部客户端是否订阅失败（日志无 internal/CloudMqttLink 记录）③柜侧改为打印完整堆栈（结论：`MqttSessionExpiredException` 发生在脚本 kill 时刻，不是发布失败） | **暂不把联跑 job 加进 CI**（避免红灯），改为交付可稳定复现的脚本 `scripts/cross-process-swap.ps1` + 模拟器 `--auto-swap`/`--device` 模式 | **M2 唯一未关的门**。下一步入口：查嵌入模式下 `BrokerLifecycle` 的 publish handler 是否只接了本 JVM 内的分发——同一 JVM 里 SwapFlowTest 能收到事件、跨进程收不到，差异就在这个点上 |
 | 2026-09-30 | M1 · 本地 Broker 选型 | 目标：本地/CI 用可嵌入纯 Java Broker 跑通 MQTT 5 接入。实测：IotTransportTest 连上 CONNECT 阶段即失败——Moquette 0.17 对 MQTT 5 CONNECT 回的 CONNACK 无法被标准 v5 客户端（HiveMQ MQTT Client）解码，报 `MqttDecodeException: Exception while decoding CONNACK: wrong reason code`；排除自身认证因素后（已把内部客户端口令拆为 `InternalClientSecrets` 单独实现并校验 `cleanStart=true`）仍复现 | 先试 Moquette 0.18/0.19（仓库不存在该版本）、再排除会话缓存与云侧认证路径差异 | **暂定 `buddy.iot.enabled=false` + `IotTransportTest` 标 `@Disabled` 并写明原因**；接入层改为 **Vert.x MQTT Server**（纯 Java、可嵌入、Apache-2.0、v5 支持完整），完成后去掉注解并把默认值改回 true | **已解决（2026-09-30）**：接入层换为 **Vert.x MQTT Server**，`IotTransportTest` 5 个用例全部跑绿（真 TCP + 真 Broker + 真 H2），`buddy.iot.enabled` 默认值已恢复 true、测试档统一关闭 |
 
 ## 5. 变更日志
@@ -194,6 +195,17 @@
   `FACT_MISSING`）；⑤ 往生成列 `active_user` 写值（测试脚本的错）；⑥ 一次 SearchReplace 把方法体改坏（重复残留），
   立即读回原地修复。
   自证：`mvn verify` **211 用例全绿 + JaCoCo 达标**（新增 `SwapInterventionTest` 8 例）；`vue-tsc` + 构建通过。
+- 2026-09-30：**M2 第 11 批：不变式 I1–I10 逐条实证 + 跨进程联跑（未闭环）**——
+  `SwapInvariantTest` 9 例逐条钉（尽量用“故意违反一次、期望被拒”）；自查发现两处“文档承诺与实现不一致”：
+  I9 的 `active_battery` 生成列没建唯一索引（V17 补）、I8 的 `swap_compensation` 表零写入者；
+  现在 compensate 逐项落台账 + `ABORTING→ABORTED` 有真 guard（新增 `finishAborting` 入口给 M3 异步补偿）。
+  另发现 `ADMIN_RESOLVE_COMPLETED` 在实扣失败时默默放过（违反 I3），已改为抛异常回滚。
+  跨进程联跑：模拟器加 `--auto-swap`/`--device`（并修了“末位参数永远读不到”的 CLI 解析 bug），
+  脚本能跑到“上线→建单→S1 下发→柜侧执行”，但柜侧上行事件云侧收不到（见 §4 登记）；
+  为此补了 `POST /swap/rights/grant`（复用现有 `member:right:adjust`，不新增权限码）。
+  **工具级教训**：IDE 把带错误的 class 写进 `target/` 后，Maven 按时间戳跳过重编 → “BUILD SUCCESS”是假的；
+  本批 `SwapFlowService` 一个缺失 `import java.util.List` 就这样被遮蔽了两次，直到 `mvn clean` 才暴露。
+  自证：buddy `mvn clean verify` **224 用例全绿 + JaCoCo 达标**；buddy-sim **20 用例全绿**。
 - 2026-09-30：**M2 第 10 批（B3 续）：后台只读三页（柜机监控/电池资产/账实差异）**——
   `SwapAdminReadRepository` + `AdminSwapReadController`（三个列表接口，固定列与固定排序，不接前端 order by）
   + `biz/swap/cabinet.vue`（含仓位明细抽屉）/`battery.vue`/`discrepancy.vue`，V11 预置的三个菜单不再落 404。

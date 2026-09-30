@@ -52,6 +52,29 @@ public class DeviceLink implements AutoCloseable {
     private volatile String sessionId = "s-" + UUID.randomUUID().toString().substring(0, 12);
     private volatile long lastTrustedNowMs = System.currentTimeMillis();
 
+    /** 自动跑完一次换电（跨进程联跑用）：门开后自动代用户投入/取走。 */
+    private volatile boolean autoSwap;
+    private volatile String oldBatteryCode = "BAT-USER-1";
+    private volatile int oldBatterySoc = 30;
+    private volatile String offerBatteryCode;
+    private volatile long autoSwapDelayMs = 1500L;
+
+    /**
+     * 开启自动换电动作。
+     *
+     * 为什么用 setter 而不是改构造器：现有测试与 CLI 都在用 7 参构造，为一个可选行为
+     * 把必填参数拉到 11 个只会让调用方四处改。电池编码由脚本传入，
+     * 因为 `battery_taken` 必须带与云侧分配一致的编码——否则会被云侧判 IDENTITY_SUSPECT，
+     * 那不是联跑失败，而是身份校验正常工作。
+     */
+    public void enableAutoSwap(String oldBattery, int oldSoc, String offerBattery, long delayMs) {
+        this.oldBatteryCode = oldBattery;
+        this.oldBatterySoc = oldSoc;
+        this.offerBatteryCode = offerBattery;
+        this.autoSwapDelayMs = Math.max(200L, delayMs);
+        this.autoSwap = true;
+    }
+
     public DeviceLink(String host, int port, String productKey, String deviceId, String masterSecret,
                       CabinetDevice cabinet, FaultPolicy faults) {
         this.host = host;
@@ -110,7 +133,9 @@ public class DeviceLink implements AutoCloseable {
                 Thread.currentThread().interrupt();
                 return;
             } catch (RuntimeException e) {
-                System.err.println("[sim:" + deviceId + "] 处理下行异常：" + e.getMessage());
+                // 只打 message 会把“哪个主题发不出去”丢掉，跨进程联跑调试全靠这行
+                System.err.println("[sim:" + deviceId + "] 处理下行异常：" + e);
+                e.printStackTrace();
             }
         }
     }
@@ -184,6 +209,34 @@ public class DeviceLink implements AutoCloseable {
                 .qos(MqttQos.AT_LEAST_ONCE).payload(SimProtocol.encode(envelope)).send();
     }
 
+    private void scheduleAutoSwap(String cmd, int slotNo) {
+        System.out.println("[sim:" + deviceId + "] 收到指令 " + cmd + " slot=" + slotNo
+                + " autoSwap=" + autoSwap);
+        if (!autoSwap || slotNo <= 0) {
+            return;
+        }
+        // 自动把“用户的物理动作”接在门开之后：跨进程联跑需要的是一个完整的对手方，
+        // 而不是只能人工触发的半具设备。延迟模拟真人操作（不能同毫秒完成，否则测不出中间态）。
+        Thread worker = new Thread(() -> {
+            try {
+                Thread.sleep(autoSwapDelayMs);
+                if ("OPEN_SLOT".equals(cmd)) {
+                    System.out.println("[sim:" + deviceId + "] 自动动作：投入 " + oldBatteryCode + " 到仓 " + slotNo);
+                    simulateUserInsert(slotNo, oldBatteryCode, oldBatterySoc);
+                } else if ("UNLOCK_SLOT".equals(cmd)) {
+                    System.out.println("[sim:" + deviceId + "] 自动动作：从仓 " + slotNo + " 取走 " + offerBatteryCode);
+                    simulateUserTake(slotNo, offerBatteryCode, 100);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (RuntimeException e) {
+                System.err.println("[sim:autoSwap] " + e.getMessage());
+            }
+        }, "sim-auto-swap-" + deviceId);
+        worker.setDaemon(true);
+        worker.start();
+    }
+
     /** 执行并产出应答；物理事件由 executeXxx 内部按故障策略决定是否上报。 */
     private SimProtocol.Envelope execute(SimProtocol.Envelope envelope, boolean critical) {
         String cmd = envelope.cmd();
@@ -204,6 +257,7 @@ public class DeviceLink implements AutoCloseable {
                     return reply(envelope, "E3001", replyData, critical);
                 }
                 publishDoorEvent(slotNo, "door_open", "CMD", !faults.suppressEvent(cmd));
+                scheduleAutoSwap(cmd, slotNo);
             }
             case "LOCK_SLOT" -> {
                 cabinet.closeDoor(slotNo);
