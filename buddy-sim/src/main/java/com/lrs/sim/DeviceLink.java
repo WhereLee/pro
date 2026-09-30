@@ -121,19 +121,67 @@ public class DeviceLink implements AutoCloseable {
         lastTrustedNowMs = System.currentTimeMillis();
         ValidationChain.Outcome outcome = chain.accept(payload, lastTrustedNowMs, true,
                 envelope -> execute(envelope, critical));
-        if (outcome.envelope() == null) {
+        String cmd = outcome.envelope() == null ? "" : String.valueOf(outcome.envelope().cmd());
+        switch (outcome.verdict()) {
+            case ACCEPT -> {
+                // FI-01：不回任何应答。注意动作已经发生了（门已开），只是不应答 ——
+                // 这正是"超时不等于未发生"要能测出来的形状。
+                if (faults.swallowReply(cmd)) {
+                    faults.recordFired("dropReply:" + cmd);
+                    return;
+                }
+                replyWithRepeat(outcome.envelope(), cmd);
+            }
+            // 关键：重复指令不是"忽略"，而是重放上次应答；否则云侧拿不到回执会误判超时
+            case DUPLICATE_REPLAYED -> publishEnvelope(outcome.envelope());
+            default -> publishEnvelope(rejectReply(outcome, payload));
+        }
+    }
+
+    /** FI-02：同一条应答可重复投递 N 次（含抖动），用于验证云侧幂等。 */
+    private void replyWithRepeat(SimProtocol.Envelope reply, String cmd) {
+        int times = Math.max(1, faults.replyRepeat(cmd));
+        for (int i = 0; i < times; i++) {
+            if (i > 0) {
+                try {
+                    Thread.sleep(faults.jitterMillis(200));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                faults.recordFired("duplicateReply:" + cmd + "#" + i);
+            }
+            publishEnvelope(reply);
+        }
+    }
+
+    /** 被拒的指令也要给一个明确错误码，不能静默吞掉。 */
+    private SimProtocol.Envelope rejectReply(ValidationChain.Outcome outcome, byte[] payload) {
+        String code = switch (outcome.verdict()) {
+            case REJECT_SIGN -> "E1001";
+            case REPLAY -> "E1002";
+            case EXPIRED -> "E1003";
+            case UNKNOWN_CMD -> "E0003";
+            default -> "E9999";
+        };
+        ObjectNode data = MAPPER.createObjectNode().put("detail", outcome.verdict().name());
+        if (outcome.msgId() != null) {
+            data.put("cmdId", outcome.msgId());
+        }
+        long now = System.currentTimeMillis();
+        SimProtocol.Envelope unsigned = new SimProtocol.Envelope(SimProtocol.VERSION, ulid(), now, now + 60_000L,
+                ulid(), null, sessionId, from, null, seq.incrementAndGet(), null, code, data, null);
+        String sign = SimProtocol.sign(SimProtocol.messageSecret(masterSecret), unsigned);
+        return new SimProtocol.Envelope(SimProtocol.VERSION, unsigned.msgId(), now, unsigned.expireAt(),
+                unsigned.nonce(), null, sessionId, from, null, unsigned.seq(), null, code, data, sign);
+    }
+
+    private void publishEnvelope(SimProtocol.Envelope envelope) {
+        if (envelope == null) {
             return;
         }
-        if (outcome.verdict() == ValidationChain.Verdict.DUPLICATE_REPLAYED) {
-            // 重复指令：重放上次应答，而不是沉默 —— 否则云侧会误判超时
-            publishReplyRaw(outcome.envelope());
-            faults.recordFired("replayed:" + outcome.msgId());
-            return;
-        }
-        if (outcome.verdict() == ValidationChain.Verdict.ACCEPT) {
-            return;
-        }
-        publishResult(publishMessageOf(outcome));
+        client.publishWith().topic("swap/v1/up/" + productKey + "/" + deviceId + "/cmd_reply")
+                .qos(MqttQos.AT_LEAST_ONCE).payload(SimProtocol.encode(envelope)).send();
     }
 
     /** 执行并产出应答；物理事件由 executeXxx 内部按故障策略决定是否上报。 */
@@ -239,10 +287,6 @@ public class DeviceLink implements AutoCloseable {
                 critical);
     }
 
-    private SimProtocol.Envelope publishMessageOf(ValidationChain.Outcome outcome) {
-        return outcome.envelope();
-    }
-
     private SimProtocol.Envelope build(String topic, String cmd, String code, ObjectNode data, boolean critical) {
         long now = System.currentTimeMillis();
         SimProtocol.Envelope unsigned = new SimProtocol.Envelope(SimProtocol.VERSION, ulid(), now,
@@ -253,34 +297,8 @@ public class DeviceLink implements AutoCloseable {
                 unsigned.nonce(), null, sessionId, from, null, unsigned.seq(), cmd, code, data, sign);
     }
 
-    private void publishReplyRaw(SimProtocol.Envelope previous) {
-        if (previous != null) {
-            publishResult(previous);
-        }
-    }
-
-    private void publishResult(SimProtocol.Envelope envelope) {
-        if (envelope == null) {
-            return;
-        }
-        int repeat = faults.replyRepeat(envelope.cmd());
-        for (int i = 0; i < Math.max(1, repeat); i++) {
-            publish("swap/v1/up/" + productKey + "/" + deviceId + "/cmd_reply",
-                    (ObjectNode) (envelope.data() instanceof ObjectNode node ? node : MAPPER.createObjectNode()),
-                    true, envelope);
-            if (repeat > 1) {
-                faults.recordFired("duplicateReply:" + envelope.msgId() + "#" + i);
-            }
-        }
-    }
-
     private void publish(String topic, ObjectNode data, boolean reply) {
-        publish(topic, data, reply, null);
-    }
-
-    private void publish(String topic, ObjectNode data, boolean reply, SimProtocol.Envelope preset) {
-        SimProtocol.Envelope envelope = preset != null ? preset
-                : build(topic, reply ? "REPLY" : null, reply ? "OK" : null, data, false);
+        SimProtocol.Envelope envelope = build(topic, reply ? "REPLY" : null, reply ? "OK" : null, data, false);
         client.publishWith().topic(topic).qos(MqttQos.AT_LEAST_ONCE)
                 .payload(SimProtocol.encode(envelope)).send();
     }

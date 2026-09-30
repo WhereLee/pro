@@ -160,5 +160,25 @@
   其中 M1 新增的真实链路证据：正确口令连入并分发留痕、错口令拒、重复 msgId 只分发一次、伪造签名不分发并留 E1001、
   越权订阅被 ACL 拒、指令下发-应答-超时-迟到应答纠正、跨用例唯一约束隔离、模拟器自身校验链 10 项。
   两个由测试抽出的真 bug已修：`!putIfAbsent(...)` NPE；nonce 与幂等检查顺序倒置。
+- 2026-09-30：**CRITICAL 依赖漏洞闭环（含方法论修正）**——M1 推送后 `security-scan` 连续两轮红。
+  第一轮我只从日志拿到 `Total: 1 (CRITICAL: 1)`，table 表体被日志输出形式吃掉，**不知道包名只能猜**：
+  我先猜 netty 把 buddy-sim 对齐到 4.1.135 —— 白跑一轮（仍红）。第二轮改为**先让门禁自己报出包名**：
+  给 Trivy 加 `format: json` + `output:` 并接一个 `if: always()` 的打印步骤，立即得到
+  `CVE-2026-75595，fixed by 4.2.17.Final, 4.1.137.Final`（netty）。
+  处置：buddy-sim 逐件抬到 4.1.137（本地镜像无 netty-bom 4.1.137，但各件存在，所以显式条目写在 BOM 导入之前）；
+  buddy 侧额外加 `<netty.version>4.1.137.Final</netty.version>`——
+  **这一步不是为了让门禁变绿**：Trivy 扫 pom 只报声明过的依赖，buddy 没声明 netty 故从未报，
+  但运行镜像里确实带着 4.1.135。“门禁未报”不等于“不存在”，这类差异必须主动补。
+  同时顺手修了模拟器一个真 bug：`DeviceLink` 把 `ACCEPT` 分支的应答直接丢弃（发了指令永远收不到回复），
+  开不了这个口就测不到幂等重放；FI-01/FI-04 在真 Broker 上行为已验（详见下条）。
+  教训已写进记忆：**可诊断的门禁比严门禁重要，拿不到包名的安全门禁只会逼人猜**。
+- 2026-09-30：**M1 补上设备侧的真 Broker 联跑证据**：新增 `buddy-sim/src/test/.../SimBrokerRoundTripTest`（5 例），
+  设备连的是**与两侧实现都无关的 Vert.x MQTT 5 Server**（test 作用域，不引入 buddy 代码），真 TCP 跑：
+  收指令→开门→回应答→发 `door_open` 事件；同 msgId 重复投递重放上次应答且门只开一次；
+  FI-01（不应答）时**门已开**；FI-04（有 ACK 无事件）时 ACK 照到；伪造签名回 E1001 且不开门。
+  这里又踩到与云侧同一个 PUBACK 坑（测试 Broker 忘开 `publishAutoAck` 时设备 QoS1 发布死等，
+  症状是测试挂住而不是报错）—— 同一个坑两次在不同代码里重现，证明它值得写进文档而不只是注释。
+  自证：`buddy-sim` **20 用例全绿**（原 15 + 新 5）；`buddy` **120 用例全绿 + JaCoCo 达标**。
+  仍未做：两个独立进程的跨进程联跑（属 M3 混沌/场景 DSL 范畴），以及设备注册接口取密钥（M2）。
 - 2026-09-29：**CI 结果核查与文档备案（用户要求）**——用 gh CLI 直连核查首次完整流水线（run 36565377941 · `225a079`）：`backend`/`frontend`/`mysql-consistency`/`e2e`/`docker` 五 job 全绿（其中 docker 为新增 job 首跑通过），唯一红为 `security-scan`——根因：`aquasecurity/trivy-action@0.28.0` 引用缺 `v` 前缀（该库 tag 为 `vX.Y.Z`，`0.28.0` ref 实测 404；修复过程见下条）。新增 `buddy/docs/ci.md`：流水线全景 / gh 查看与重跑手册 / 已知问题与修复 / 异地（服务器）能力对齐要点（不含任何凭据），README 文档索引同步。
 - 2026-09-29：**security-scan 修复闭环（用户批准）**——补 `v` 前缀（commit 159d806）后仍红，暴露第二层根因：`trivy-action@v0.28.0` 内部 pin 的 `aquasecurity/setup-trivy@v0.2.1` tag 已被上游删除（嵌套 composite 引用失效）；改升 `trivy-action@v0.36.0`（内部改 pin setup-trivy 至 commit SHA / v0.2.6，不再受删 tag 影响；6 个在用输入已核对），commit 978360b 推送后 run 36567189359 **6/6 全绿**。ci.md §3/§4.1 同步修订为最终版并推送。教训：pin 第三方 action 时，嵌套引用链的间接依赖 tag 也可能被上游删除，优先选内部以 SHA pin 依赖的版本。

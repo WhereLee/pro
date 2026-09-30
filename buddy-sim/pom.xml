@@ -31,12 +31,19 @@
     </properties>
 
     <!--
-      对齐 netty 版本：不声明时 hivemq-mqtt-client 会拉到 4.1.99.Final，
-      而那个版本带 CRITICAL 级 CVE，会被 CI 的 Trivy 硬门禁直接拦下。
-      与云侧（Spring Boot 管理）保持同一小版本，顺便避免两侧行为差异。
+      netty 版本管理： hivemq-mqtt-client 不声明 netty 版本时会拉到 4.1.99.Final（带 CRITICAL CVE）。
+      先用 netty-bom 对齐到云侧同小的 4.1.135，再**逐件覆盖**到 4.1.137.Final：
+      CVE-2026-75595 修在 4.1.137 / 4.2.17，而本地镜像仓库只有 netty-bom 的 4.1.135（各件 4.1.137 存在），
+      所以不能直接依赖 bom 取 137。写在 BOM 之前，显式条目优先级高于导入的 BOM。
     -->
     <dependencyManagement>
         <dependencies>
+            <dependency><groupId>io.netty</groupId><artifactId>netty-buffer</artifactId><version>4.1.137.Final</version></dependency>
+            <dependency><groupId>io.netty</groupId><artifactId>netty-codec</artifactId><version>4.1.137.Final</version></dependency>
+            <dependency><groupId>io.netty</groupId><artifactId>netty-common</artifactId><version>4.1.137.Final</version></dependency>
+            <dependency><groupId>io.netty</groupId><artifactId>netty-handler</artifactId><version>4.1.137.Final</version></dependency>
+            <dependency><groupId>io.netty</groupId><artifactId>netty-resolver</artifactId><version>4.1.137.Final</version></dependency>
+            <dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.137.Final</version></dependency>
             <dependency>
                 <groupId>io.netty</groupId>
                 <artifactId>netty-bom</artifactId>
@@ -67,6 +74,14 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 仅为集成测试需要一个**与设备侧实现无关**的 MQTT 5 Broker（标准实现、不是 buddy 的代码）；
+             不进 compile 作用域，避免模拟器自带一个 broker 被人误用于生产。 -->
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-mqtt</artifactId>
+            <version>4.5.14</version>
             <scope>test</scope>
         </dependency>
         <dependency>
