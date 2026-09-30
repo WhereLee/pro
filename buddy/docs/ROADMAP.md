@@ -194,8 +194,14 @@
   `FACT_MISSING`）；⑤ 往生成列 `active_user` 写值（测试脚本的错）；⑥ 一次 SearchReplace 把方法体改坏（重复残留），
   立即读回原地修复。
   自证：`mvn verify` **211 用例全绿 + JaCoCo 达标**（新增 `SwapInterventionTest` 8 例）；`vue-tsc` + 构建通过。
-  未完：柜机监控/电池资产/差异台账三个后台页（V11 预置了菜单，现在会落 404 回退，需先补列表接口，
-  不先造假页面）。
+- 2026-09-30：**M2 第 10 批（B3 续）：后台只读三页（柜机监控/电池资产/账实差异）**——
+  `SwapAdminReadRepository` + `AdminSwapReadController`（三个列表接口，固定列与固定排序，不接前端 order by）
+  + `biz/swap/cabinet.vue`（含仓位明细抽屉）/`battery.vue`/`discrepancy.vue`，V11 预置的三个菜单不再落 404。
+  冒烟发现的真错：柜机列表 SQL 把 `c.device_row_id` 写成 `d.device_row_id`（`iot_device` 没这列）→ 接口 500。
+  这类错只在真正执行 SQL 时才暴露，所以新增 `AdminSwapReadTest` 把“三个列表能执行成功 + 分页结构 +
+  不存在单号走业务错误”固定成 CI 断言（不再靠人肉起服务）。
+  自证：`mvn verify` **214 用例全绿 + JaCoCo 达标**；前端 `vue-tsc` + 构建通过；
+  真后端（dev profile）冒烟五个接口：修正前 1 个 500、修正后全部 200。
 - 2026-09-30：**M2 第 8 批（B2）：C 端 H5 主链路**——
   后端 `DisplayState`（订单态→展示态的唯一映射，漏登记直接抛）+ `MemberSwapService`/`MemberSwapController`；
   前端独立 `api/member.ts`（独立 axios 实例 + 独立令牌存储 + 401 时先用 refresh 换一次并重试，只重试一次）、
