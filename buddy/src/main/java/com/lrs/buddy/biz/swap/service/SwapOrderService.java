@@ -14,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -52,14 +53,30 @@ public class SwapOrderService {
         }
     }
 
-    @Transactional
+    private final com.lrs.buddy.biz.swap.flow.CabinetLocks locks;
+    private final org.springframework.transaction.PlatformTransactionManager txManager;
+
+    /**
+     * 建单入口：**先拿柜机分段锁，再开事务**。
+     *
+     * 顺序不能反。反了（@Transactional 方法内部拿锁）时，锁在方法返回时就释放，
+     * 而事务在其后才提交——唯一索引的裁决发生在提交时刻，保护窗口与锁窗口错开，
+     * 等于锁白加。这条层次约定是本方法不用 @Transactional 注解的全部原因。
+     */
     public CreateResult create(long userId, String cabinetNo, String source, String traceId) {
-        LocalDateTime now = LocalDateTime.now();
-        long tenantId = TenantContext.getTenantId() == null ? 1L : TenantContext.getTenantId();
         SwapOrderRepository.CabinetRow cabinet = repo.findCabinet(cabinetNo);
         if (cabinet == null) {
             throw new IllegalArgumentException("柜机不存在：" + cabinetNo);
         }
+        TransactionTemplate template = new TransactionTemplate(txManager);
+        return locks.underLock(cabinet.id(), () -> template.execute(status -> createInTx(cabinet, userId, source, traceId)));
+    }
+
+    private CreateResult createInTx(SwapOrderRepository.CabinetRow cabinet, long userId, String source,
+                                    String traceId) {
+        LocalDateTime now = LocalDateTime.now();
+        long tenantId = TenantContext.getTenantId() == null ? 1L : TenantContext.getTenantId();
+        String cabinetNo = cabinet.cabinetNo();
 
         // ---- 1) 建 CREATED 订单。一人一单在这里由 DB 判定，不是靠 count 查询 ----
         long orderId = IdWorker.getId();
