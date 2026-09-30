@@ -31,6 +31,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SwapLedgerTest {
 
     private static final String PRODUCT_KEY = "SWAP-CAB-8";
+    /** V8 种子里的真实站点（id=1）；用不存在的 id 会把“没有外键”这个缺口藏起来 */
+    private static final long SITE_ID = 1L;
 
     @Autowired
     private SwapLedgerService ledger;
@@ -53,7 +55,7 @@ class SwapLedgerTest {
         var device = newDevice();
         String cabinetNo = uniqueId("CABNO-");
 
-        SwapCabinet cabinet = ledger.createCabinet(7201L, PRODUCT_KEY, cabinetNo, device.deviceId(),
+        SwapCabinet cabinet = ledger.createCabinet(SITE_ID, PRODUCT_KEY, cabinetNo, device.deviceId(),
                 8, "ELECTROMAGNET", new BigDecimal("3.50"));
 
         assertThat(cabinet.getDeviceRowId()).isEqualTo(device.deviceRowId());
@@ -71,12 +73,12 @@ class SwapLedgerTest {
         // 把刚注册的设备停用，模拟 V15 那类"凭证不可用"的行
         jdbc.update("UPDATE iot_device SET enabled = 0 WHERE id = ?", device.deviceRowId());
 
-        assertThatThrownBy(() -> ledger.createCabinet(7201L, PRODUCT_KEY, uniqueId("CABNO-"),
+        assertThatThrownBy(() -> ledger.createCabinet(SITE_ID, PRODUCT_KEY, uniqueId("CABNO-"),
                 device.deviceId(), 8, null, null))
                 .as("柜机不能绑一台接不进来的设备")
                 .isInstanceOf(IllegalStateException.class);
 
-        assertThatThrownBy(() -> ledger.createCabinet(7201L, PRODUCT_KEY, uniqueId("CABNO-"),
+        assertThatThrownBy(() -> ledger.createCabinet(SITE_ID, PRODUCT_KEY, uniqueId("CABNO-"),
                 "CAB-NOT-EXIST", 8, null, null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -86,7 +88,7 @@ class SwapLedgerTest {
     void batteryImportKeepsBothSidesConsistent() {
         var device = newDevice();
         String cabinetNo = uniqueId("CABNO-");
-        ledger.createCabinet(7201L, PRODUCT_KEY, cabinetNo, device.deviceId(), 4, null, null);
+        ledger.createCabinet(SITE_ID, PRODUCT_KEY, cabinetNo, device.deviceId(), 4, null, null);
         String batteryCode = uniqueId("BAT-");
 
         SwapBattery battery = ledger.registerBattery(cabinetNo, 2, batteryCode, "BAT-60V20AH",
@@ -114,14 +116,14 @@ class SwapLedgerTest {
     void duplicateLedgerCodesAreRejected() {
         var device = newDevice();
         String cabinetNo = uniqueId("CABNO-");
-        ledger.createCabinet(7201L, PRODUCT_KEY, cabinetNo, device.deviceId(), 2, null, null);
+        ledger.createCabinet(SITE_ID, PRODUCT_KEY, cabinetNo, device.deviceId(), 2, null, null);
         String batteryCode = uniqueId("BAT-");
         ledger.registerBattery(cabinetNo, 1, batteryCode, "BAT-60V20AH", 90, new BigDecimal("25.0"), null, null);
 
         assertThatThrownBy(() -> ledger.registerBattery(cabinetNo, 2, batteryCode, "BAT-60V20AH",
                 90, new BigDecimal("25.0"), null, null))
                 .isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> ledger.createCabinet(7201L, PRODUCT_KEY, cabinetNo,
+        assertThatThrownBy(() -> ledger.createCabinet(SITE_ID, PRODUCT_KEY, cabinetNo,
                 newDevice().deviceId(), 2, null, null))
                 .isInstanceOf(IllegalStateException.class);
     }
@@ -131,7 +133,7 @@ class SwapLedgerTest {
     void disableSlotRespectsOccupancy() {
         var device = newDevice();
         String cabinetNo = uniqueId("CABNO-");
-        ledger.createCabinet(7201L, PRODUCT_KEY, cabinetNo, device.deviceId(), 3, null, null);
+        ledger.createCabinet(SITE_ID, PRODUCT_KEY, cabinetNo, device.deviceId(), 3, null, null);
         ledger.registerBattery(cabinetNo, 1, uniqueId("BAT-"), "BAT-60V20AH", 90, new BigDecimal("25.0"),
                 null, null);
 
@@ -148,7 +150,7 @@ class SwapLedgerTest {
     void illegalSlotStateIsRejectedByDatabase() {
         var device = newDevice();
         String cabinetNo = uniqueId("CABNO-");
-        SwapCabinet cabinet = ledger.createCabinet(7201L, PRODUCT_KEY, cabinetNo, device.deviceId(), 2,
+        SwapCabinet cabinet = ledger.createCabinet(SITE_ID, PRODUCT_KEY, cabinetNo, device.deviceId(), 2,
                 null, null);
 
         assertThatThrownBy(() -> jdbc.update("UPDATE swap_slot SET slot_state = 'NOT_A_STATE' "

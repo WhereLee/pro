@@ -180,6 +180,16 @@
   症状是测试挂住而不是报错）—— 同一个坑两次在不同代码里重现，证明它值得写进文档而不只是注释。
   自证：`buddy-sim` **20 用例全绿**（原 15 + 新 5）；`buddy` **120 用例全绿 + JaCoCo 达标**。
   仍未做：两个独立进程的跨进程联跑（属 M3 混沌/场景 DSL 范畴），以及设备注册接口取密钥（M2）。
+- 2026-09-30：**M2 第 3 批：建单主链路与 guard 链**——`SwapOrderService.create` 把三条约束全部交给 DB
+  （一人一单 = `active_user` 生成列唯一索引；抢仓 = `active_slot` 唯一索引直接 INSERT，不先查；
+  额度够不够 = 带条件 UPDATE 的影响行数），拒绝路径落 REJECTED 行并可断言零物理动作。
+  补偿集中在 `reject()` 里按当前事实状态回退，而不是散在各失败分支——分支各自回退迟早会漏一条。
+  实现中补了一处**会造成误拒**的不一致：预占只写 reservation 表而不推 `slot_state = RESERVED_ORDER`，
+  下一单候选里仍带着它，选中才发现抢不到（安全，但错拒）。现在预占与仓态同步（`markSlotsReserved` / `restoreSlotsOf` 成对）。
+  新增 `SwapOrderCreationTest` 6 例（正常建单、B3 一人一单、零副作用拒绝、柜机离线、权益不足全量补偿、并发不双占）。
+  本批我自己制造并当场修掉三个错：`member_user` 插入占位符多一个、`swap_order_event` 少传 tenant_id、
+  用例共用 V10 那一个会员导致先被 B3 拦住（那测的就不是 guard 而是用例互相干拢）——改为每用例自带会员。
+  自证：`mvn verify` **174 用例全绿 + JaCoCo 达标**。
 - 2026-09-30：**M2 第一批：台账、凭证、分配策略与双状态机代码化**——
   新增 `biz/swap/provision/DeviceProvisionService`（明文密钥只返回一次、轮转即失效）、
   `biz/swap/service/SwapLedgerService`（建柜机硬卡"设备已注册且启用"、资产双向引用同事务）、
