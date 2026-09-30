@@ -18,6 +18,15 @@ mybatis-plus:
   configuration:
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
 
+# C 端身份域的两个密钥在真库 profile 下也必须给：MemberTokens / MemberAuthService 是
+# “缺失即拒绝启动”（故意的），所以任何一个新 profile 漏配都会让整个上下文起不来。
+buddy:
+  member:
+    jwt-secret: mysql-it-member-jwt-secret-32bytes-min!!
+    phone-pepper: mysql-it-member-phone-pepper-32bytes-min!!!
+    mock-realname-auto-approve: true
+    mock-sms-echo-code: true
+
 logging:
   level:
     com.lrs.buddy: warn
