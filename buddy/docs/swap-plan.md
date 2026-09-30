@@ -189,7 +189,42 @@
 
 **验证门**：订单/步骤迁移全遍历（**未列出的 `(state,event)` 组合必须抛异常**）；I1–I10 不变式全部有 DB 约束实证；真 InnoDB 仓位抢占；E2E 主链路绿；**buddy + buddy-sim 跨进程跑成一单**。
 
-### M3 · 异常与一致性（设备侧 L2 全套）
+### M3 · 异常与一致性（设备侧 L2 全套）—— 进行中（云侧阶段 1 已交付）
+
+> **已交付（2026-10-01，阶段 1·云侧一致性与补偿）**：
+> ① **补偿动作目录代码化**：`CompensationAction`（14 个动作，与 V9 `ck_comp_action` 逐字对齐），
+>    每个动作带 `blocking()`（是否属于 I8 的“落终态前必须完成”集）与 `targetType`；
+>    FSM 文档新增 **§7.1 补偿动作目录**（动作 / 执行者 / 幂等键 / 完成判据 / 阻塞终态），
+>    `SwapDdlContractTest#compensationCatalogIsAlignedAcrossDocDdlCodeAndExecutor` 钉住**四方**一致：
+>    文档 §7.1 ↔ DDL CHECK ↔ 枚举 ↔ `SwapCompensationExecutor.implementedActions()`。
+>    第四方是这批的关键：前三方只能证“名字存在”，证不了“有人执行”——
+>    库里写得进、执行器不认的动作会永远 PENDING，而账面看起来是“待处理”而不是“没人管”。
+> ② **补偿执行器** `SwapCompensationExecutor`：ShedLock 扫 `PENDING/FAILED` → 每项独立事务执行 →
+>    CAS 置 `DONE`；失败累加 `attempts` + `last_error` + 指数退避（30s→30min 封顶）；
+>    重试耗尽（8 次）记差异转人工；**本域没有执行者的动作保持 PENDING 并记差异，绝不标 DONE/SKIPPED**；
+>    阻塞项做完后由执行器把停在 `ABORTING` 的单收尾（复用 M2 的 guard 与 `finishAborting`，不重写一份）。
+> ③ **对账自愈** `AssetLedgerReconcileJob`：I7 的三条**双向引用检查**（仓→电池不回指 / 电池→仓位不含它 /
+>    ACTIVE 绑定与电池状态不同真）；只在证据充分时自愈，且自愈的方式是**写补偿台账交给执行器**
+>    （幂等、可重试、有流水），而不是 job 自己改表——否则“谁改的”又多一条只有日志能回答的旁路。
+> ④ **拒收双分岔 R-A/R-B**：`SwapFlowService.rejectIntake` 按“电池在不在仓内 / 用户手上有没有新电池”分岔
+>    （锁仓 + 待取回 + 工单 vs 重开仓让用户取回 + `ABORTED` + 权益 `RELEASED`），两条都不误改归属；
+>    断言形状是“**拒收后停在 ABORTING 才是对的**，跑一次执行器才到 ABORTED”。
+> ⑤ **安全联动** `SwapSafetyLinkageService` + 受控接口 `POST /api/swap/safety/emergency-stop`（新权限码 `swap:safety:stop`，V18）：
+>    站点内逐柜锁柜 + `EMERGENCY_STOP`（走 `cmd/critical` 独立主题，qos/ttl/retryMax 全照协议 §4.1）+
+>    在途单批量走 `ALARM_SAFETY_LOCK`（系统自动，**不占 `ADMIN_ABORT` 的人工通道**）+ 告警升级挂补偿台账；
+>    另对外提供补偿台账的查看与对账/补偿的手动触发（`swap:compensation:read`、`swap:discrepancy:replay`）。
+> ⑥ **重启现场重建** `SwapRecoveryService`（`ApplicationReadyEvent`）：补非终态单的 deadline（否则超时驱动永远扫不到，
+>    “挂着不动”变成“永久悬挂”）、收尾补偿已做完的 `ABORTING` 单、孤立指令**只记差异不删**（删指令等于销毁证据）。
+>
+> 这批里改掉的三个真缺陷（都不是“写完就绿”能发现的）：
+> `WRITE_DISCREPANCY` 原先是只打计数的 noop 却被标 `DONE`（谎报完成）；
+> 安全联动重复触发时第二次停充指令被 `uk_icmd_active` 拒掉又被 catch 吞掉（柜机只收到过一次停充）；
+> `emergencyStopSite` 的外层 `@Transactional` + 内部 try/catch 是**假隔离**（内层一抛整个事务被标 rollback-only，
+> 方法照样返回“成功”，锁柜与中止全被回滚）——改为逐柜独立事务 + 逐单独立提交。
+>
+> **待做 → 阶段 2（设备侧 L2）/ 阶段 3（验证门）**：FaultPolicy 补满 9 类、场景 DSL、**HTTP 控制面**
+>（原列入阶段 0 的计划项，因联跑用 `--auto-swap` 定长动作即可完成而**顺延到本阶段**，已登记 ROADMAP §4）、
+> FI-01..16 矩阵与四维断言、双端指标可归因、千台规模、混沌三脚本、压测“不变式违反数=0”。
 
 - **云侧**：补偿动作目录与台账、对账自愈、拒收双分岔（R-A/R-B）、安全联动（紧急停充/锁柜/告警升级）、`UNCONFIRMED` 收敛、重启现场重建。
 - **设备侧 L2**：FI-01..16 补满、场景 DSL、seed 可重复、HTTP 控制面、双端 Prometheus 指标（可归因）、千台规模。

@@ -181,6 +181,82 @@ class SwapDdlContractTest {
                         unquotedSet(checkEnumOfColumn(migrationSql(), "swap_order_step", "ck_step_code")));
     }
 
+    /**
+     * 补偿动作目录必须与 DDL 逐字一致。
+     *
+     * 为什么单独钉一条：补偿台账是“某件必须发生的事还没发生”的清单，
+     * 代码里有而 DDL 没有 → 写入被 CHECK 拒；DDL 里有而代码没有 → 留下“能写但没人执行”的空动作。
+     * 两个方向都是事后才发现的那类错。
+     */
+    @Test
+    @DisplayName("CompensationAction 必须与 swap_compensation.action 的枚举集逐字一致")
+    void compensationActionsMatchDatabaseEnum() {
+        Set<String> codeActions = Arrays.stream(
+                com.lrs.buddy.biz.swap.compensation.CompensationAction.values())
+                .map(Enum::name).collect(Collectors.toCollection(LinkedHashSet::new));
+        assertThat(codeActions).as("补偿动作目录与 DDL 不一致")
+                .containsExactlyInAnyOrderElementsOf(
+                        unquotedSet(checkEnumOfColumn(migrationSql(), "swap_compensation", "ck_comp_action")));
+    }
+
+    /**
+     * 补偿动作目录必须四方一致。
+     *
+     * 为什么不是三方：文档↔DDL↔枚举只能证明“这个名字存在”，证明不了“这个名字有人执行”。
+     * M3 的真实风险就是这一头：台账能写入一个执行器不认的动作，它会永远 PENDING，
+     * 而账面看起来是“待处理”而不是“没人管”——没人会为一个 PENDING 项报警。
+     * 所以第四方拿执行器的 {@code implementedActions()} 来对：
+     * 文档说“换电域”的动作必须与代码里真实现了的集合完全相等。
+     */
+    @Test
+    @DisplayName("补偿动作目录：文档 §7.1 ↔ DDL CHECK ↔ CompensationAction ↔ 执行器已实现集合")
+    void compensationCatalogIsAlignedAcrossDocDdlCodeAndExecutor() {
+        Map<String, String[]> catalog = compensationCatalogFromDoc();
+        Set<String> ddl = unquotedSet(checkEnumOfColumn(migrationSql(), "swap_compensation", "ck_comp_action"));
+        Map<String, Boolean> code = Arrays.stream(
+                        com.lrs.buddy.biz.swap.compensation.CompensationAction.values())
+                .collect(Collectors.toMap(Enum::name, e -> e.blocking(), (a, b) -> a, LinkedHashMap::new));
+
+        assertThat(catalog.keySet()).as("FSM §7.1 的动作集合与 DDL CHECK 不一致")
+                .containsExactlyInAnyOrderElementsOf(ddl);
+        assertThat(code.keySet()).as("CompensationAction 与 DDL CHECK 不一致")
+                .containsExactlyInAnyOrderElementsOf(ddl);
+
+        code.forEach((action, blocking) -> {
+            String docBlocking = catalog.get(action)[1];
+            assertThat(docBlocking).as("§7.1 的“阻塞终态”列只应写 是/否：" + action).isIn("是", "否");
+            assertThat(blocking).as("§7.1 与 CompensationAction.blocking() 不一致：" + action)
+                    .isEqualTo("是".equals(docBlocking));
+        });
+
+        Set<String> docOwns = catalog.entrySet().stream()
+                .filter(e -> e.getValue()[0].startsWith("换电域"))
+                .map(Map.Entry::getKey).collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> implemented = new LinkedHashSet<>(
+                com.lrs.buddy.biz.swap.compensation.SwapCompensationExecutor.implementedActions());
+        assertThat(docOwns).as("文档标为换电域执行的动作必须与执行器真实现了的集合完全相等")
+                .containsExactlyInAnyOrderElementsOf(implemented);
+        assertThat(implemented).as("执行器实现了 DDL 里不存在的动作（写不进台账）").isSubsetOf(ddl);
+    }
+
+    /** 解析 FSM §7.1 的补偿动作目录表：动作名 → {执行者, 阻塞终态}。 */
+    private static Map<String, String[]> compensationCatalogFromDoc() {
+        String section = section(fsmDoc(), "### 7.1 补偿动作目录", "## 8.");
+        Map<String, String[]> rows = new LinkedHashMap<>();
+        for (String line : section.split("\n")) {
+            String t = line.trim();
+            if (!t.startsWith("| `") || t.contains("---")) {
+                continue;
+            }
+            String[] cells = t.split("\\|");
+            assertThat(cells.length).as("§7.1 表行缺列（应为 5 列）：" + t).isGreaterThanOrEqualTo(6);
+            String action = cells[1].replace("`", "").trim();
+            rows.put(action, new String[]{cells[2].trim(), cells[5].trim()});
+        }
+        assertThat(rows).as("FSM §7.1 未解析到补偿动作目录，解析已失效").isNotEmpty();
+        return rows;
+    }
+
     @Test
     @DisplayName("代码里的在途集合必须等于 active_user 生成列的列表")
     void codeInFlightMatchesActiveUserColumn() {

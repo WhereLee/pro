@@ -41,6 +41,11 @@ class SwapInvariantTest {
 
     private static final String PRODUCT_KEY = "SWAP-CAB-8";
     private static final String BATTERY_PRODUCT = "BAT-60V20AH";
+    private static final java.util.List<String> BLOCKING =
+            java.util.Arrays.stream(com.lrs.buddy.biz.swap.compensation.CompensationAction.values())
+                    .filter(com.lrs.buddy.biz.swap.compensation.CompensationAction::blocking)
+                    .map(Enum::name).toList();
+
     private static final AtomicLong SEQ = new AtomicLong();
 
     @Autowired
@@ -208,7 +213,7 @@ class SwapInvariantTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM swap_compensation WHERE order_id = ? AND comp_state "
                 + "= 'DONE'", Integer.class, clean))
                 .as("预占释放与权益退回都要有补偿台账行，否则 I8 无法审计").isPositive();
-        assertThat(repo.countOpenCompensation(clean)).isZero();
+        assertThat(repo.countOpenCompensation(clean, BLOCKING)).isZero();
 
         // 反向：人为留一条 PENDING 补偿项（模拟 M3 异步补偿排队中），必须拦住 ABORTED
         long blocked = createdOtherOrder();

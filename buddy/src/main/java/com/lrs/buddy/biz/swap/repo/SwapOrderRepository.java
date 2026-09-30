@@ -682,26 +682,111 @@ public class SwapOrderRepository {
     }
 
     /**
-     * 补偿台账落笔。I8 的可执行形式：“ABORTING→ABORTED” 前必须查得无 PENDING/FAILED 项，
-     * 而能查的前提是每一项都真的被写下来。
+     * 补偿台账落笔。
      *
-     * @param state DONE（同步完成）|PENDING（待异步执行）|FAILED（执行失败待重试）|SKIPPED
+     * 返回 false = 该动作早已挂在台账上（uk_comp_action 就是“同一目标同一动作不重复排队”的幂等键）。
+     * 不能把重复写入当成异常招上层：那会让“安全联动重拍一次”或“对账每日重跑”把流程带崩。
      */
-    public void insertCompensation(long id, long orderId, String action, String targetType, Long targetId,
-                                   String state, LocalDateTime now, long tenantId) {
-        jdbc.update("INSERT INTO swap_compensation (id, order_id, action, target_type, target_id, comp_state, "
-                        + "attempts, done_at, create_time, update_time, version, del_flag, tenant_id) "
-                        + "VALUES (?,?,?,?,?,?, 1, ?, ?, ?, 0, 0, ?)",
-                id, orderId, action, targetType, targetId, state,
-                "DONE".equals(state) ? Timestamp.valueOf(now) : null,
-                Timestamp.valueOf(now), Timestamp.valueOf(now), tenantId);
+    public boolean insertCompensation(long id, long orderId, String action, String targetType, Long targetId,
+                                      String state, LocalDateTime now, long tenantId) {
+        try {
+            jdbc.update("INSERT INTO swap_compensation (id, order_id, action, target_type, target_id, comp_state, "
+                            + "attempts, done_at, create_time, update_time, version, del_flag, tenant_id) "
+                            + "VALUES (?,?,?,?,?,?, 1, ?, ?, ?, 0, 0, ?)",
+                    id, orderId, action, targetType, targetId, state,
+                    "DONE".equals(state) ? Timestamp.valueOf(now) : null,
+                    Timestamp.valueOf(now), Timestamp.valueOf(now), tenantId);
+            return true;
+        } catch (org.springframework.dao.DuplicateKeyException alreadyQueued) {
+            return false;
+        }
     }
 
-    /** 未完成的补偿项数（PENDING / FAILED）——I8 的 guard 条件。 */
-    public int countOpenCompensation(long orderId) {
+    /**
+     * 未完成的补偿项数（PENDING / FAILED）——I8 的 guard 条件。
+     *
+     * 只数**阻塞类动作**（由 {@code CompensationAction.blocking()} 决定）：
+     * 把“建工单/告警升级”这类旁路项也算进去，一条工单系统抖动就能让订单永远进不了终态。
+     */
+    public int countOpenCompensation(long orderId, java.util.Collection<String> blockingActions) {
+        if (blockingActions == null || blockingActions.isEmpty()) {
+            return 0;
+        }
+        String placeholders = String.join(", ", java.util.Collections.nCopies(blockingActions.size(), "?"));
+        Object[] args = new Object[blockingActions.size() + 1];
+        args[0] = orderId;
+        int i = 1;
+        for (String action : blockingActions) {
+            args[i++] = action;
+        }
         Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM swap_compensation WHERE order_id = ? "
-                + "AND comp_state IN ('PENDING','FAILED') AND del_flag = 0", Integer.class, orderId);
+                + "AND comp_state IN ('PENDING','FAILED') AND action IN (" + placeholders + ") AND del_flag = 0",
+                Integer.class, args);
         return n == null ? 0 : n;
+    }
+
+    /** 到期待执行的补偿项（next_retry_at 为空表示立即可跑）。 */
+    public List<Map<String, Object>> dueCompensation(LocalDateTime now, int limit) {
+        return jdbc.queryForList("SELECT id, order_id, action, target_type, target_id, comp_state, attempts, last_error, "
+                        + "remark "
+                        + "FROM swap_compensation WHERE comp_state IN ('PENDING','FAILED') AND del_flag = 0 "
+                        + "AND (next_retry_at IS NULL OR next_retry_at <= ?) ORDER BY id LIMIT ?",
+                Timestamp.valueOf(now), Math.max(1, Math.min(limit, 200)));
+    }
+
+    /** CAS 置 DONE：只有仍在 PENDING/FAILED 的行能被本次调用完成（并发下只有一个执行者赢）。 */
+    public boolean markCompensationDone(long id, LocalDateTime now) {
+        return jdbc.update("UPDATE swap_compensation SET comp_state = 'DONE', done_at = ?, last_error = NULL, "
+                + "update_time = ?, version = version + 1 WHERE id = ? AND comp_state IN ('PENDING','FAILED')",
+                Timestamp.valueOf(now), Timestamp.valueOf(now), id) == 1;
+    }
+
+    /** 失败：累加尝试次数 + 写退避时间与原因（不做“静默吞掉”）。 */
+    public void markCompensationFailed(long id, String error, LocalDateTime nextRetryAt, LocalDateTime now) {
+        jdbc.update("UPDATE swap_compensation SET comp_state = 'FAILED', attempts = attempts + 1, last_error = ?, "
+                        + "next_retry_at = ?, update_time = ?, version = version + 1 WHERE id = ? "
+                        + "AND comp_state IN ('PENDING','FAILED')",
+                error == null ? "UNKNOWN" : (error.length() > 500 ? error.substring(0, 500) : error),
+                Timestamp.valueOf(nextRetryAt), Timestamp.valueOf(now), id);
+    }
+
+    /** 柜机当前在途单（安全联动要批量处置同一个柜机上的单）。 */
+    public List<OrderRow> findInfightByCabinet(long cabinetId) {
+        return jdbc.query("SELECT id, order_no, user_id, site_id, cabinet_id, return_slot_no, offer_slot_no, "
+                        + "return_battery_id, offer_battery_id, order_state, right_state, tenant_id FROM swap_order "
+                        + "WHERE cabinet_id = ? AND active_user IS NOT NULL", ORDER_ROW, cabinetId);
+    }
+
+    /** 柜机台账中未进入终态的单（含 ABORTING：它也是"没完"，重启后必须被看见）。 */
+    public List<Map<String, Object>> ordersStuckWithoutDeadline() {
+        return jdbc.queryForList("SELECT id, order_state FROM swap_order WHERE order_state NOT IN "
+                + "('COMPLETED','REJECTED','ABORTED','FAILED_MANUAL') AND (deadline_ts IS NULL OR deadline_at IS NULL)");
+    }
+
+    public List<Long> ordersAwaitingCompensation() {
+        return jdbc.queryForList("SELECT id FROM swap_order WHERE order_state = 'ABORTING' "
+                + "AND update_time < ?", Long.class, Timestamp.valueOf(LocalDateTime.now().minusSeconds(30)));
+    }
+
+    /** 站点内柜机（含设备列，供安全联动逐台停充）。 */
+    public List<Map<String, Object>> cabinetsAtSite(long siteId) {
+        return jdbc.queryForList("SELECT c.id, c.cabinet_no, c.cabinet_state, c.device_row_id, d.product_key, "
+                + "d.device_id FROM swap_cabinet c JOIN iot_device d ON d.id = c.device_row_id AND d.del_flag = 0 "
+                + "WHERE c.site_id = ? AND c.del_flag = 0", siteId);
+    }
+
+    /** 锁柜（幂等：已经锁着的不再重复写，避免把 locked_reason 冲成最后一次的原因）。 */
+    public boolean lockCabinet(long cabinetId, String reason, LocalDateTime now) {
+        return jdbc.update("UPDATE swap_cabinet SET cabinet_state = 'SAFETY_LOCKED', locked_reason = ?, "
+                        + "update_time = ?, version = version + 1 WHERE id = ? AND del_flag = 0 "
+                        + "AND cabinet_state <> 'SAFETY_LOCKED'",
+                reason, Timestamp.valueOf(now), cabinetId) == 1;
+    }
+
+    public void setDeadline(long orderId, long deadlineTs, LocalDateTime deadlineAt, LocalDateTime now) {
+        jdbc.update("UPDATE swap_order SET deadline_ts = ?, deadline_at = ?, update_time = ? WHERE id = ? "
+                        + "AND deadline_ts IS NULL",
+                deadlineTs, Timestamp.valueOf(deadlineAt), Timestamp.valueOf(now), orderId);
     }
 
     private static String firstNonBlank(String a, String b) {

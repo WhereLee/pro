@@ -346,22 +346,67 @@
 > 且生成列**不写 `STORED` 关键字**（MySQL 默认 VIRTUAL 并允许在其上建唯一索引，H2 两边均接受）。
 > **不变式必须落在数据库约束上，不能只落在应用代码里**——代码会漏、会并发、会被绕过，约束不会。
 
+### 7.1 补偿动作目录（M3 代码化，四方逐字对齐）
+
+补偿台账里的每个动作都必须回答四个问题：**谁执行、重复执行凭什么不叠加、什么算做完了、它没做完时订单能不能落终态**。
+本表是这四个问题的唯一口径，由 `SwapDdlContractTest` 钉住四方一致：
+**本表 ↔ `swap_compensation.action` 的 CHECK ↔ `CompensationAction` 枚举 ↔ `SwapCompensationExecutor` 实际实现了哪些动作**。
+（第 4 方是 M3 加上的：前三方一致只能证明名字对得上，证明不了“这个名字有人执行”。
+库里能写入、执行器却不认的动作会永远停在 PENDING——那比写不进去更危险，因为账面看起来是“待处理”而不是“没人管”。）
+
+幂等键统一为 `uk_comp_action (order_id, action, target_type, target_id)`：同一笔订单、同一个动作、同一个目标只有一条台账，
+重试是**再执行同一条**，不是插一条新的。因此执行侧一律写成“只动仍处于源状态的行”。
+
+| 动作 | 执行者 | 幂等键 | “完成”的判据 | 阻塞终态 |
+|---|---|---|---|---|
+| `RELEASE_RESERVATION` | 换电域 | 订单 + SLOT（全部仓） | 该单不再有 `resv_state='ACTIVE'` 的预占 | 是 |
+| `LOCK_SLOT` | 换电域 | 订单 + SLOT（单仓） | 目标仓 `slot_state='ISOLATED'` | 否 |
+| `LOCK_CABINET` | 换电域 | 订单 + CABINET | 目标柜 `cabinet_state='SAFETY_LOCKED'` | 否 |
+| `BATTERY_TO_POOL` | 换电域 | 订单 + BATTERY | 电池回到 `IN_CABINET_*` 且无持有人 | 是 |
+| `BATTERY_PENDING_PICKUP` | 换电域 | 订单 + BATTERY | 电池 `battery_state='PENDING_PICKUP'` | 是 |
+| `UNBIND_USER_BATTERY` | 换电域 | 订单 + BATTERY | 该电池不再有 `ACTIVE` 绑定 | 是 |
+| `REFUND_AUTO` | 资金域（M4） | 订单 + BATTERY | 退款流水落账且金额与预占一致 | 是 |
+| `REFUND_MANUAL` | 资金域（M4） | 订单 + BATTERY | 审批通过并出账（双人复核） | 否 |
+| `RELEASE_RIGHT` | 换电域 | 订单 + RIGHT | `right_state='RELEASED'` 且有 `RELEASE` 流水 | 是 |
+| `DEDUCT_RIGHT` | 换电域 | 订单 + RIGHT | `right_state='DEDUCTED'` 且 `DEDUCT` 流水恰好 1 条 | 是 |
+| `WRITE_DISCREPANCY` | 换电域 | 订单 + 目标 | `swap_discrepancy` 存在对应去重键的行 | 否 |
+| `CREATE_WORK_ORDER` | 运维域（M5） | 订单 + 目标 | 工单已派给站点/维修 | 否 |
+| `ESCALATE_ALARM` | 告警域（M5） | 订单或柜 + 告警 | 告警升级到人（值班确认） | 否 |
+| `FREEZE_ORDER` | 人工（M4 后台） | 订单 + ORDER | 运营确认核销后解冻 | 否 |
+
+三条容易做错的地方，写在这里而不是只写在注释里：
+
+1. **“阻塞”与否决定 I8 的判定范围**：非阻塞项（工单/告警/冻结/记账类）失败只降级为告警，不能卡住 `ABORTING → ABORTED`；
+   否则工单系统抖动一次，订单就永久悬挂。阻塞项必须做完，做不完就退避重试，重试耗尽转人工。
+2. **执行者标成换电域的动作，代码必须真的实现**；标成 M4/M5 的动作在 M3 里**保持 PENDING 并记一条差异**，
+   绝不标 `DONE`/`SKIPPED`——把没人执行的事记成已完成，是本表存在的全部理由。
+3. **资金类动作（退/扣）只能由台账驱动**：`RELEASE_RIGHT`/`DEDUCT_RIGHT`/`REFUND_*` 的判据都是“流水条数”，
+   不是“订单状态看起来对”，否则重复退权益这种事故在账面上是查不出来的。
+
 ---
 
 ## 8. 不变式：实现机制 + 测试（每条都必须能被测出来）
 
-| # | 不变式 | 实现机制 | 测试 |
+> 本表的“实现机制”与“测试”两列在 M3 阶段 1 改成**真实存在的索引名与测试类#方法名**。
+> 原来这里写的是设计时的假设名（`swap_battery.holder_active`、`BatteryOwnershipInvariantTest` 等），
+> 而它们既不存在也不是实现落点——“照文档去找找不到”的约束等于没有约束。
+> 实证套件是 `SwapInvariantTest`（I1–I10 逐条“故意违反一次、期望被拒”）。
+
+| # | 不变式 | 实现机制（真实落点） | 测试 |
 |---|---|---|---|
-| **I1** | 一块电池至多属于一个归属（仓位 或 某人订单） | `swap_battery.holder_active` 生成列唯一索引 + 变更走 CAS | `BatteryOwnershipInvariantTest` |
-| **I2** | 一个仓位同一时刻至多被一笔在途订单预占 | `swap_slot.active_order` 生成列唯一 + 分配用 `fromState` 谓词 CAS | `SlotReservationInvariantTest` |
-| **I3** | 权益扣减 ⇔ 电池所有权变更 | **同一 `@Transactional`**（CAS 失败整事务回滚，不产生孤儿事件）；跨进程部分走 Outbox | `DeductionOwnershipAtomicTest`（含 CAS 冲突回滚断言） |
-| **I4** | 非终态必有生效 deadline | 状态变更方法**强制传 deadline**，`deadline IS NULL AND status NOT IN (终态)` 启动即断言 | `DeadlinePresenceTest` |
-| **I5** | 事件流可重放出当前状态 | 迁移前先 append 事件再改状态；重放器与投影比对 | `EventStreamReplayTest`（随机事件序列 + 固定样本） |
-| **I6** | 重复投递不产生第二次迁移 | `swap_event_dedup` 唯一索引 + 迁移带 `fromState` 谓词 | `IdempotentTransitionTest`（并发 32 打同一事件） |
-| **I7** | 在册电池 = 仓内 + 用户持有 + 隔离/维修/丢失 | 日终对账 Job（ShedLock + `@IgnoreTenant`），不等即告警 + 生成差异 | `AssetLedgerIdentityTest` |
-| **I8** | 进 `ABORTED` 前补偿集必须全部完成 | `swap_compensation` 台账 + `ABORTING→ABORTED` 迁移 guard 查台账 | `CompensationIncompleteTest` |
-| **I9** | 一块电池同一时刻至多一条**生效**使用权绑定 | `swap_battery_binding.active_user` 生成列唯一索引 | `BatteryBindingUniquenessTest` |
-| **I10** | 归属变更只能由订单终态或人工核销触发（观测数据不得改归属） | 归属字段写在独立表且**与观测表无外键/无写入通道**；观测写入走只追接口；`binding.changed_by ∈ {ORDER, MANUAL}` 枚举硬约束 | `ObservationCannotChangeOwnershipTest` |
+| **I1** | 一块电池至多属于一个归属（仓位 或 某人订单） | `swap_battery_binding.active_battery` 生成列 + 唯一索引 `uk_bind_active_batt`（V8）；写入走 CAS | `SwapInvariantTest#batteryHasAtMostOneActiveBinding` |
+| **I2** | 一个仓位同一时刻至多被一笔在途订单预占 | `swap_slot_reservation.active_slot` 生成列 + 唯一索引 `uk_resv_active`（V8）；分配用 `fromState` 谓词 CAS | `SwapInvariantTest#slotHasAtMostOneActiveReservation` |
+| **I3** | 权益扣减 ⇔ 电池所有权变更 | **同一 `@Transactional`**（CAS 失败整事务回滚，不产生孤儿事件）；跨进程部分走 Outbox | `SwapInvariantTest#deductionFailureRollsBackOwnershipDecision` |
+| **I4** | 非终态必有生效 deadline | 状态变更写入 `deadline_ts`/`deadline_at`；启动时 `SwapRecoveryService` 扫描补全，超时驱动才扫得到 | `SwapInvariantTest#everyInflightOrderHasDeadline`、`SwapSafetyAndRecoveryTest#recoveryRestoresMissingDeadline` |
+| **I5** | 事件流可重放出当前状态 | 迁移前先 append `swap_order_event` 再改状态；重放器与投影比对 | `SwapInvariantTest#eventStreamReplaysToCurrentState` |
+| **I6** | 重复投递不产生第二次迁移 | `swap_event_dedup` 唯一索引 `uk_ededup` + 迁移带 `fromState` 谓词 | `SwapInvariantTest#duplicateEventIsNotAppliedTwice` |
+| **I7** | 在册电池 = 仓内 + 用户持有 + 隔离/维修/丢失 | `AssetLedgerReconcileJob` 每日跑三条**双向引用检查**（仓→电池不回指 / 电池→仓位不含它 / ACTIVE 绑定与电池状态不同真）；在 `battery_state` 是 CHECK 闭集的前提下，“总数相等”永真、没有检出能力，所以恒等式只能以双向一致的形式实现 | `SwapInvariantTest#assetLedgerIdentityHolds`、`SwapRejectIntakeTest#reconcileDetectsDanglingBatteryReference` |
+| **I8** | 进 `ABORTED` 前补偿集必须全部完成 | `swap_compensation` 台账（阻塞集见 §7.1）+ `ABORTING→ABORTED` guard 查台账；执行器做完后收尾 | `SwapInvariantTest#abortedRequiresCompensationComplete`、`SwapCompensationExecutorTest`、`SwapSafetyAndRecoveryTest#recoveryFinalizesOnlyWhenCompensationDone` |
+| **I9** | 一块电池同一时刻至多一条**生效**使用权绑定 | `uk_bind_active_batt`（active_battery，V8 已建；V17 又在同列建了一条 `uk_bind_active_battery`，属重复索引——见 `ROADMAP.md` §4 自误登记） | `SwapInvariantTest#batteryHasAtMostOneActiveBinding` |
+| **I10** | 归属变更只能由订单终态或人工核销触发（观测数据不得改归属） | `ck_bind_source CHECK (bind_source IN ('ORDER','MANUAL','IMPORT'))`——枚举层面就排除观测通道；观测表只追不改 | `SwapInvariantTest#observationCannotCreateBinding` |
+
+“一人至多一块电池”（B3 口径）同样落在 `uk_bind_active_user`（active_user 生成列，V8）；
+M6 放开时去掉该索引并改生成列口径，表结构不动。
 
 ---
 

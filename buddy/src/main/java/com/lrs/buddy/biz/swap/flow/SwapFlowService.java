@@ -47,6 +47,12 @@ public class SwapFlowService {
     private static final String BIZ_TYPE = "SWAP_ORDER";
 
     private final SwapOrderRepository repo;
+
+    /** I8 只卡“阻塞类补偿”；旁路项（工单/告警）失败不得把订单锁在 ABORTING。 */
+    private static final java.util.List<String> BLOCKING_COMPENSATIONS =
+            java.util.Arrays.stream(com.lrs.buddy.biz.swap.compensation.CompensationAction.values())
+                    .filter(com.lrs.buddy.biz.swap.compensation.CompensationAction::blocking)
+                    .map(Enum::name).toList();
     private final DeviceCommandService commands;
     private final ObjectMapper objectMapper;
     private final MeterRegistry registry;
@@ -258,6 +264,58 @@ public class SwapFlowService {
                 slotNo, order.offerBatteryId(), null);
     }
 
+    /**
+     * 拒收双分岔 R-A / R-B（§5.5 第 32 条）。
+     *
+     * <p>判定依据是步骤上的事实（关门且确实有投入 = 电池已在仓内），而不是笼统的"拒收"：
+     * <ul>
+     *   <li><b>R-A（电池已在仓内）</b>：锁仓 + 电池转待取回（那是用户的财产，不能进池被下一个人取走），
+     *       两条都写进补偿台账，因此即使本次事务回滚，下一轮执行器仍会把它们做完。</li>
+     *   <li><b>R-B（电池未入仓 / 门还开着）</b>：重开归还仓让用户取回，再回滚预占与权益。
+     *       不锁仓（仓里本来就没东西），也不转待取回（电池还在用户手上）。</li>
+     * </ul>
+     */
+    void rejectIntake(SwapOrderRepository.OrderRow order, LocalDateTime now, String reason) {
+        fireOrder(order.id(), OrderState.VERIFYING, OrderEvent.VERIFY_FAIL_REJECT, "verify_reject_" + reason,
+                null, order.returnBatteryId(), null);
+        Map<String, Object> step2 = repo.step(order.id(), StepCode.WAIT_INSERT.order());
+        boolean batteryInside = step2 != null
+                && StepState.PHYSICS_DONE.name().equals(String.valueOf(step2.get("step_state")));
+        if (batteryInside) {
+            Long slotId = repo.slotRowId(order.cabinetId(), order.returnSlotNo());
+            repo.insertCompensation(IdWorker.getId(), order.id(), "LOCK_SLOT", "SLOT", slotId, "PENDING", now,
+                    order.tenantId());
+            if (order.returnBatteryId() != null) {
+                repo.insertCompensation(IdWorker.getId(), order.id(), "BATTERY_PENDING_PICKUP", "BATTERY",
+                        order.returnBatteryId(), "PENDING", now, order.tenantId());
+            }
+            repo.insertDiscrepancy(IdWorker.getId(), "VERIFY:" + order.id(), "IDENTITY_SUSPECT", order.id(),
+                    order.cabinetId(), order.returnBatteryId(), order.userId(), null,
+                    "{\"return_slot\":" + order.returnSlotNo() + "}", reason + "：电池已入仓，锁仓并转待取回",
+                    order.tenantId());
+        } else {
+            // 重开归还仓：不重开就等于把用户拒在"电池取不回来"的状态里
+            try {
+                redispatchReturnSlot(order.id());
+            } catch (RuntimeException e) {
+                log.warn("R-B 重开归还仓失败（转人工）：order={}, err={}", order.orderNo(), e.getMessage());
+                repo.insertDiscrepancy(IdWorker.getId(), "REOPEN:" + order.id(), "FACT_MISSING", order.id(),
+                        order.cabinetId(), order.returnBatteryId(), order.userId(), null, null,
+                        reason + "：重开归还仓失败，需人工开门取回", order.tenantId());
+            }
+        }
+        // 资金与预占是同步回退（同事务），物理动作（锁仓/待取回）挂补偿台账。
+        compensate(order, reason, now);
+        // 不在此处强推 ABORTED：阻塞补偿还没做完就落终态，I8 就成了空话。
+        // 没有阻塞项时立即收尾；有则交给补偿执行器做完后收尾。
+        if (repo.countOpenCompensation(order.id(), BLOCKING_COMPENSATIONS) == 0) {
+            fireOrder(order.id(), OrderState.ABORTING, OrderEvent.ABORT_DONE, "abort_done", null, null, null);
+        } else {
+            registry.counter("swap.abort.waiting_compensation").increment();
+            log.info("拒收后等待阻塞补偿完成再落终态：order={}, reason={}", order.orderNo(), reason);
+        }
+    }
+
     /** 门关之后：S3 核验 → 通过则下发 S4 开取电仓。 */
     private void verifyAndOffer(SwapOrderRepository.OrderRow order, Long returnBatteryId, LocalDateTime now) {
         fireOrder(order.id(), OrderState.RETURNED, OrderEvent.ENTER_S3, "enter_S3", null, null, null);
@@ -265,18 +323,15 @@ public class SwapFlowService {
                 null, null, null);
         Map<String, Object> battery = returnBatteryId == null ? null : repo.batteryById(returnBatteryId);
         if (battery == null) {
-            // 认不出归还电池：不能进取电阶段（否则下一步就是"拿一块不知道是谁的电池给人"）
-            fireOrder(order.id(), OrderState.VERIFYING, OrderEvent.VERIFY_FAIL_REJECT, "verify_fail_unknown_battery",
-                    null, returnBatteryId, null);
-            abort(order, "RETURN_BATTERY_UNKNOWN", now);
+            // 认不出归还电池：不能进取电阶段（否则下一步就是"拿一块不知道是谁的电池给人"）。
+            // 分叉依据是现场事实而不是笼统的"拒收"：电池已入仓与还在门口，处置完全相反。
+            rejectIntake(order, now, "RETURN_BATTERY_UNKNOWN");
             return;
         }
         Integer soc = battery.get("soc") == null ? null : ((Number) battery.get("soc")).intValue();
         if (soc != null && soc < 5) {
             // 极低 SOC 的电池不能入池充电，走拒收分岔（§5.5 第 32 条）
-            fireOrder(order.id(), OrderState.VERIFYING, OrderEvent.VERIFY_FAIL_REJECT, "verify_reject", null,
-                    returnBatteryId, null);
-            abort(order, "VERIFY_REJECTED", now);
+            rejectIntake(order, now, "VERIFY_REJECTED_LOW_SOC");
             return;
         }
         advanceStep(order.id(), StepCode.VERIFY_RETURN.order(), StepState.DISPATCHED.name(), StepState.VERIFIED.name(),
@@ -350,9 +405,9 @@ public class SwapFlowService {
         compensate(order, reason, now);
         // I8 的可执行形式：台账里还有 PENDING/FAILED 项就不让进 ABORTED。
         // 不这样做的话，“已完成补偿”这个字永远包不住信任，M3 的异步补偿一旦排队未执行就丢资产。
-        int open = repo.countOpenCompensation(order.id());
+        int open = repo.countOpenCompensation(order.id(), BLOCKING_COMPENSATIONS);
         if (open > 0) {
-            throw new IllegalStateException("I8：仍有 " + open + " 项补偿未完成，禁止进入 ABORTED");
+            throw new IllegalStateException("I8：仍有 " + open + " 项阻塞补偿未完成，禁止进入 ABORTED");
         }
         // 补偿先做完再落 ABORTED（I8）：先落终态再慢慢补，会让"已完成"这个字包含不可信
         fireOrder(order.id(), OrderState.ABORTING, OrderEvent.ABORT_DONE, "abort_done", null, null, null);
@@ -507,6 +562,31 @@ public class SwapFlowService {
             throw new IllegalStateException("只有在 ABORTING 的单能补偿收尾，当前：" + order.state());
         }
         abort(order, "COMPENSATION_DONE", LocalDateTime.now());
+    }
+
+    /**
+     * 安全联动触发的自动中止（不同于人工中止）。
+     *
+     * 两条路径的差别必须在状态机上可见：
+     * {@code ALARM_SAFETY_LOCK} 是系统因安全事件自己把单送进 ABORTING（高温/烟感/紧急停充），
+     * 而 {@code ADMIN_ABORT} 是人判断后的“待核资”。前者不经过双人复核，所以只能进
+     * 要补偿的 ABORTING，绝不可直接落资金终态。
+     */
+    @Transactional
+    public void safetyAbort(long orderId, String reason) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        OrderState from = OrderState.valueOf(order.state());
+        if (from == OrderState.ABORTING || from.isTerminal()) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        fireOrder(orderId, from, OrderEvent.ALARM_SAFETY_LOCK, "alarm_safety_lock", null, null, null);
+        compensate(requireOrder(orderId), "SAFETY:" + reason, now);
+        if (repo.countOpenCompensation(orderId, BLOCKING_COMPENSATIONS) == 0) {
+            fireOrder(orderId, OrderState.ABORTING, OrderEvent.ABORT_DONE, "abort_done", null, null, null);
+        } else {
+            registry.counter("swap.abort.waiting_compensation").increment();
+        }
     }
 
     // ---------------- 人工干预（双人复核通过后才调用）----------------

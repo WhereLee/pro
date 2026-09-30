@@ -73,4 +73,26 @@ public class SwapAdminReadRepository {
         sql.append(" ORDER BY create_time DESC LIMIT ").append(Math.max(1, Math.min(limit, 200)));
         return jdbc.queryForList(sql.toString(), args.toArray());
     }
+
+    /**
+     * 补偿台账（M3）。“哪些事还没做完、重试了几次、下一次什么时候跑”只能从这张表回答，
+     * 所以 last_error 与 next_retry_at 必须给出去，不然运维看了等于没看。
+     */
+    public List<Map<String, Object>> compensations(String compState, int limit) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, order_id, action, target_type, target_id, comp_state, attempts,
+                       next_retry_at, last_error, done_at, remark, create_time, update_time
+                FROM swap_compensation WHERE del_flag = 0
+                """);
+        List<Object> args = new java.util.ArrayList<>();
+        if (compState != null && !compState.isBlank()) {
+            sql.append(" AND comp_state = ?");
+            args.add(compState);
+        }
+        // 待办优先：PENDING/FAILED 排前面，同状态里按下一次重试时间（越早越紧急）
+        sql.append(" ORDER BY CASE WHEN comp_state IN ('PENDING','FAILED') THEN 0 ELSE 1 END, "
+                + "COALESCE(next_retry_at, create_time) ASC, id DESC LIMIT ")
+                .append(Math.max(1, Math.min(limit, 200)));
+        return jdbc.queryForList(sql.toString(), args.toArray());
+    }
 }

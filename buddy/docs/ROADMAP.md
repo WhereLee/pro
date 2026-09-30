@@ -80,8 +80,26 @@
 | 2026-09-29 | swap · 技术选型 | 换电柜需 IoT 中间件（EMQX / TDengine / RocketMQ），本机实测**无 Docker**（MySQL 8.0.44 + Redis 5.0.14 + JDK 17 可用），而 EMQX 与 TDengine 3.x 服务端均无 Windows 原生发行版 → 主链路依赖它们就无法本地与 CI 自证 | 逐项核实环境可用性与各中间件的 Windows 支持情况 | 采用“**能力端口化 + 本地可跑等价件 + 生产可换实现**”：嵌入式 Java Broker（Vert.x MQTT / Moquette）、Transactional Outbox + Redis Stream、MySQL 分区表；并刻意**不依赖 Broker 私有特性与离线队列** | 主链路与故障路径均可本机/CI 实证；代价是本地侧不展示真集群。**取舍登记已集中至 `swap-plan.md` §7（A 类我方选择/B 类加严项）；原 8 项已重分类** |
 | 2026-09-30 | M2 · 跨进程联跑 | 两进程联跑时柜侧上行事件全部被云侧丢弃，订单卡在 RETURNING。已排除：设备接入与鉴权、指令下发（柜侧确认收到并执行）、Broker 启动、ACL 归属判定 | ①提升 `framework.iot`/`biz.swap` 到 DEBUG 复跑 ②查内部客户端订阅 ③柜侧打完整堆栈 ④给 `onPublish`/`handle()`/事件入口加插桩后复跑 | 无（未简化）——四个根因全部定位并修复，联跑已进 CI 成为门禁 job | **已解决（2026-09-30）**，四个真缺陷全部只有跨进程才能暴露：①`InboundRouter` 按报文自报的 sessionId 判迟到，而该值**云侧从未下发给设备**（协议 L23 写的“CONNECT 时签发”根本没实现）→ 会话身份改为以连接为权威、入站盖章；②事件消费**未按订单串行**，柜机 1ms 内连发 battery_detected + door_close 被 ingest 线程池并发处理，后一条在前一条提交前读步骤→判定“无投入事实”后静默返回，单永久卡在 RETURNING（新增 `OrderEventLocks`，先拿锁再开事务）；③`TAKEN` 后到的 `door_close@offer` 无分支处理（分支条件写死 `state==OFFERING`）→ 补 late-close 分支，先落事实再结算；④`ACKED` 指令被兑底扫描反复推 `TIMEOUT`（非法迁移）→ 每轮刷一条 ERROR，改为跳过 + `cmd.timeout.skipped` 指标。另：脚本里“步骤收口”的断言一开头写错了（把 S1/S4 的终态当成应当 VERIFIED，而它们的终态就是 OPEN_CONFIRMED），已改成“无步骤仍停在等待中”。 |
 | 2026-09-30 | M1 · 本地 Broker 选型 | 目标：本地/CI 用可嵌入纯 Java Broker 跑通 MQTT 5 接入。实测：IotTransportTest 连上 CONNECT 阶段即失败——Moquette 0.17 对 MQTT 5 CONNECT 回的 CONNACK 无法被标准 v5 客户端（HiveMQ MQTT Client）解码，报 `MqttDecodeException: Exception while decoding CONNACK: wrong reason code`；排除自身认证因素后（已把内部客户端口令拆为 `InternalClientSecrets` 单独实现并校验 `cleanStart=true`）仍复现 | 先试 Moquette 0.18/0.19（仓库不存在该版本）、再排除会话缓存与云侧认证路径差异 | **暂定 `buddy.iot.enabled=false` + `IotTransportTest` 标 `@Disabled` 并写明原因**；接入层改为 **Vert.x MQTT Server**（纯 Java、可嵌入、Apache-2.0、v5 支持完整），完成后去掉注解并把默认值改回 true | **已解决（2026-09-30）**：接入层换为 **Vert.x MQTT Server**，`IotTransportTest` 5 个用例全部跑绿（真 TCP + 真 Broker + 真 H2），`buddy.iot.enabled` 默认值已恢复 true、测试档统一关闭 |
+| 2026-10-01 | M3 阶段 2 · 模拟器控制面 | 计划把“最小 HTTP 控制面（`--control-port`）”列在阶段 0.2，但阶段 0 的跨进程联跑用 `--auto-swap` 定长动作（门开后自动投入/取走）已能跑成一单，控制面当时没有消耗方 | 按计划先做阶段 0 并验证门（联跑连跑两次 exit=0），再回头补控制面 | **未简化能力，只改交付顺序**：控制面（`/status`、`/fault`、`/action`、`/send`）随阶段 2 的 FI 矩阵与混沌一起交付，因为那时它才有真实的驱动者 | 阶段 0 验收不依赖它；代价是跨进程调试目前仍需靠 `--auto-swap` 的参数组合而不是运行时下单 |
 
 ## 5. 变更日志
+- 2026-10-01：**M3 阶段 1（云侧一致性与补偿）**——补偿动作目录代码化（`CompensationAction` 14 动作 + FSM 文档 §7.1 + **四方契约断言**：
+  文档↔DDL CHECK↔枚举↔`SwapCompensationExecutor.implementedActions()`）、补偿执行器（逐项事务 + 指数退避 + 耗尽转人工 +
+  **无执行者不假装完成** + 做完收尾 `ABORTING`）、对账自愈 `AssetLedgerReconcileJob`（I7 三条双向检查，自愈动作走补偿台账而不是直改表）、
+  拒收双分岔 R-A/R-B、安全联动（逐柜事务停充/锁柜 + 在途单批量 `ALARM_SAFETY_LOCK` + 告警升级挂账 + 受控接口与 V18 权限码）、
+  重启现场重建 `SwapRecoveryService`（补 deadline / 收尾 ABORTING / 孤立指令只留痕不删）；
+  文档：FSM §8 不变式表的“实现机制/测试”两列改为**真实索引名与真实测试类#方法**（原为设计期假设名，照文档找不到实现）。
+  **本轮自误清单（全部归因到人，不笼统写“若发现则修正”）**：
+  ① **V17 的自查结论是错的**——它写“V8 只建了 `active_user` 没建 `active_battery` 唯一索引”，但 V8 第 236 行早就有
+  `uk_bind_active_batt`；于是 V17 在同一列上建了一条**重复唯一索引**。不改已应用迁移（会破 Flyway 校验和），
+  处理方式：保留冗余索引 + 在 FSM §8/I9 行与本文登记在册，回收等到允许重建索引的结构变更批次。
+  ② **新测试跟 `SwapFlowTest` 撞会员 id**（都用 950_000 段）：单跑全绿、全量 `clean verify` 红（先插入者赢）——
+  已改按测试类分 id 段并在注释写清为何分块。
+  ③ **日志写进了 `target/` 导致 `mvn clean` 失败**（文件被自己的重定向占用）——构建日志改到 `target` 外。
+  **本轮改掉三个真缺陷**：`WRITE_DISCREPANCY` 只打计数却标 DONE（谎报完成）；安全联动重复触发时第二次停充被
+  `uk_icmd_active` 拒掉又被 catch 吞掉（与 M2 超时驱动同类错，这次把前置置位写进了被重发的方法内部）；
+  `emergencyStopSite` 外层 `@Transactional` + 内部 try/catch 是假隔离（rollback-only 导致“返回成功但全被回滚”）。
+  自证：buddy `mvn clean verify` 全绿（含新 4 个测试类与契约四方断言）；buddy-sim `mvn clean verify` 全绿。
 - 2026-10-01：**M2 第 12 批（阶段 0）：跨进程联跑跑通并进 CI**——
   两个真进程（buddy 内嵌 Broker + buddy-sim 柜侧）跑成一单，`SUCCESS` + 四维断言（状态/资产/权益/事件流）；
   新增 `scripts/cross-process-swap.sh`（CI）与 `.ps1`（本地）、CI `cross-process` job、
