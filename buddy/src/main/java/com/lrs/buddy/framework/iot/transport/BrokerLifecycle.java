@@ -136,6 +136,8 @@ public class BrokerLifecycle implements SmartLifecycle {
     private void onPublish(MqttEndpoint endpoint, MqttPublishMessage message) {
         String topic = message.topicName();
         String clientId = endpoint.clientIdentifier();
+        // 跨进程联跑排障的第一道入口：没有这行就无法区分“Broker 未递上来”与“递上来后被丢”
+        log.debug("MQTT 上行发布：topic={}, clientId={}, qos={}", topic, clientId, message.qosLevel());
         if (!policies.canWrite(topic, clientId)) {
             // 越权写入：只记日志与指标，不回原因（协议无此通道），并丢弃
             log.warn("拒绝越权发布：clientId={}, topic={}", clientId, topic);

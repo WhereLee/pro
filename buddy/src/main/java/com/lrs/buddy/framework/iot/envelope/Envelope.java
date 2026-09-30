@@ -45,6 +45,18 @@ public record Envelope(
         return expireAt != null && nowMillis > expireAt;
     }
 
+    /**
+     * 盖上云侧会话号（入站分发时调用）。
+     *
+     * 会话身份的权威来源是“这条连接”，不是设备自报值：设备无法可靠拿到云侧生成的 id
+     * （把 sid 塞进 CONNACK 自定义属性既不通用也不必要），而要求它回填一个从未下发过的值，
+     * 结果是**所有真实设备都被判成跨会话迟到帧**。这个缺陷只有跨进程联跑能暴露：
+     * 同 JVM 的测试里设备根本不填这个字段，于是永远碰不到。
+     */
+    public Envelope withSessionId(String session) {
+        return new Envelope(v, msgId, issuedAt, expireAt, nonce, traceId, session, from, via, seq, cmd, code, data, sign);
+    }
+
     /** 应答类报文判定：code 非空即视为对某条指令的回应。 */
     public boolean isReply() {
         return code != null && !code.isBlank();

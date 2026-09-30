@@ -88,6 +88,11 @@ public class InboundRouter {
         long ts = System.currentTimeMillis();
         MqttTopics.Inbound inbound = MqttTopics.parseInbound(topicName);
         Device device = resolveDevice(clientId);
+        // 与 onPublish 的日志对比就能分清：主题解析失败 / 设备认不出 / 验签失败 / 会话过期…
+        // （下面的失败分支全部会落 iot_message_log，所以这两行日志 + 留痕表足够定位）
+        log.debug("上行入队处理：topic={}, clientId={}, inbound={}, device={}",
+                topicName, clientId, inbound == null ? "NULL" : inbound.kind(),
+                device == null ? "NULL" : device.deviceId());
 
         if (inbound == null || inbound.kind() == MqttTopics.Kind.UNKNOWN) {
             record(clientId, device, topicName, payload, false, IotErrorCode.E0003, now, ts);
@@ -119,13 +124,17 @@ public class InboundRouter {
             record(clientId, device, topicName, payload, false, IotErrorCode.E1003, now, ts);
             return;
         }
-        // 跨会话迟到报文丢弃：不丢弃就会出现"我扫了 B 单，A 单莫名完成、电池还少一块"
-        if (envelope.sessionId() != null) {
-            String active = deviceDao.activeSessionId(device.id());
-            if (active != null && !active.equals(envelope.sessionId())) {
-                record(clientId, device, topicName, payload, false, IotErrorCode.S_SESSION_STALE, now, ts);
-                return;
-            }
+        // 会话身份以“这条连接”为权威：入站时盖上云侧当前会话号，而不是按设备自报值丢帧。
+        // 自报值与云侧不一致时只计数不丢弃：FI-10（旧会话应答迟到）的可靠判据在指令总线——
+        // DeviceCommandService.onReply 比对“下发时记录的会话”与“当前会话”，那才是双方都能对齐的事实。
+        String active = deviceDao.activeSessionId(device.id());
+        if (envelope.sessionId() != null && active != null && !active.equals(envelope.sessionId())) {
+            registry.counter("iot.session.mismatch").increment();
+            log.debug("设备自报会话号与云侧不一致（仅计数不丢弃）：deviceId={}, declared={}, active={}",
+                    device.deviceId(), envelope.sessionId(), active);
+        }
+        if (active != null) {
+            envelope = envelope.withSessionId(active);
         }
         if (envelope.msgId() == null || envelope.msgId().isBlank()) {
             record(clientId, device, topicName, payload, false, IotErrorCode.E0001, now, ts);

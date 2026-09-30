@@ -123,7 +123,37 @@ try {
     }
     $rights = Invoke-Api GET "/swap/rights/$($login.memberId)" $null $admin
     if ($rights.times_used -ne 1) { throw "权益实扣不正确：times_used=$($rights.times_used)" }
-    Write-Host "联跑通过：权益已实扣 1 次"
+
+    # 四维断言（不能只看订单态）：状态 / 资产 / 权益 / 事件流
+    $detail = Invoke-Api GET "/swap/orders/$orderNo" $null $admin
+    if ($detail.orderState -ne "COMPLETED") { throw "订单态不是 COMPLETED：$($detail.orderState)" }
+    foreach ($step in $detail.steps) {
+        # S1/S4 这类“开仓”步骤的收口态就是 OPEN_CONFIRMED（后续事实落在下一步），
+        # 所以正确的断言是“没有任何步骤还在等待中”，而不是写死一个收口集合。
+        if ($step.step_state -in @("PENDING", "DISPATCHED")) {
+            throw "步骤仍在等待中：step$($step.step_no)=$($step.step_state)"
+        }
+    }
+    $held = Invoke-Api GET "/swap/batteries?state=HELD_BY_USER&limit=200" $null $admin
+    if (-not ($held | Where-Object { $_.battery_code -eq $offerBattery })) {
+        throw "新电池未变成用户持有：$offerBattery"
+    }
+    $pool = Invoke-Api GET "/swap/batteries?limit=200" $null $admin
+    $old = $pool | Where-Object { $_.battery_code -eq $oldBattery }
+    if ($null -eq $old -or $old.battery_state -notlike "IN_CABINET*") {
+        throw "旧电池未回到柜内池：$($old.battery_state)"
+    }
+    # 事件流可重放：每一跳的 from 必须等于上一跳的 to，末跳必须等于当前态
+    $prev = $null
+    foreach ($ev in $detail.events) {
+        if ($null -eq $ev.from_state -or $null -eq $ev.to_state) { continue }
+        if ($null -ne $prev -and $ev.from_state -ne $prev) {
+            throw "事件流断裂：$prev -> $($ev.from_state)（$($ev.event_type)）"
+        }
+        $prev = $ev.to_state
+    }
+    if ($prev -ne "COMPLETED") { throw "事件流末态不是 COMPLETED：$prev" }
+    Write-Host "联跑通过：权益实扣 1 次、新旧电池归属已互换、事件流可重放至 COMPLETED"
 } finally {
     # 必须先判 $sim 非空：上一行 Start-Process 失败时它是 null，
     # 不判就会用“Stop-Process 参数为空”把真正的失败原因盖掉（本脚本真遇过）。

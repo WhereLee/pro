@@ -242,6 +242,66 @@ jobs:
       - name: Assert round-trip
         run: grep -q 'interop-check' /tmp/got.txt
 
+  # 跨进程联跑：buddy（内嵌 MQTT Broker + 业务）与 buddy-sim（柜机侧）两个真进程跑成一单，
+  # 做四维断言（状态/资产/权益/事件流）。它的价值不是“多一个绿灯”，而是同 JVM 测试两端同源，
+  # 此类缺陷（会话号权威来源、事件未按订单串行、TAKEN 后关门被丢、ACKED 被反复按时处理）
+  # 只有跨进程才能暴露——详见 ROADMAP §4/§5。
+  cross-process:
+    name: Cross-process swap (buddy + buddy-sim)
+    runs-on: ubuntu-latest
+    needs: backend
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build backend jar
+        working-directory: buddy
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Build device simulator jar
+        working-directory: buddy-sim
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Start backend (dev/H2, embedded MQTT broker) and wait for health
+        working-directory: buddy
+        run: |
+          nohup java -jar target/buddy.jar --spring.profiles.active=dev > backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            sleep 3
+            if curl -sf http://localhost:8200/api/actuator/health | grep -q '"status":"UP"'; then echo BACKEND_UP; break; fi
+          done
+
+      - name: Run one real swap across two processes
+        env:
+          SIM_JAR: buddy-sim/target/buddy-sim.jar
+        run: bash scripts/cross-process-swap.sh
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-process-logs
+          path: |
+            buddy/backend.log
+            /tmp/xp-sim.log
+            /tmp/xp-sim-err.log
+          if-no-files-found: ignore
+
   docker:
     name: Docker images (build)
     runs-on: ubuntu-latest

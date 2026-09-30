@@ -50,6 +50,8 @@ public class SwapFlowService {
     private final DeviceCommandService commands;
     private final ObjectMapper objectMapper;
     private final MeterRegistry registry;
+    private final OrderEventLocks locks;
+    private final org.springframework.transaction.support.TransactionTemplate txTemplate;
 
     /** 建单后下发 S1：开归还仓。 */
     @Transactional
@@ -72,8 +74,15 @@ public class SwapFlowService {
         log.info("S1 已下发：order={}, slot={}, cmd={}", order.orderNo(), slotNo, cmdId);
     }
 
-    /** 事件入口（由 SwapEventListener 在校验链通过后调用）。 */
-    @Transactional
+    /**
+     * 事件入口（由 SwapEventListener 在校验链通过后调用）。
+     *
+     * 两件事必须按这个顺序：**先定位订单 → 拿订单分段锁 → 再开事务**。
+     * 为什么不直接并发消费：柜机常在 1ms 内连发 battery_detected 与 door_close，
+     * 接入层是多线程的，后一条会在前一条提交前读到“还没投入事实”然后直接 return，
+     * 这一单就永久停在 RETURNING（跨进程联跑实测到）。为什么锁不能在事务里拿：
+     * 锁会先于提交释放，与建单那侧同一个层次约定。
+     */
     public void onEvent(DeviceDirectoryDao.Device device, Envelope envelope) {
         JsonNode data = envelope.data();
         String eventType = data == null ? null : data.path("eventType").asText(null);
@@ -82,25 +91,45 @@ public class SwapFlowService {
             return;
         }
         if ("swap_result".equals(eventType)) {
-            reconcile(device, envelope);
+            txTemplate.executeWithoutResult(status -> reconcile(device, envelope));
             return;
         }
-        Integer slotNo = data.hasNonNull("slotNo") ? data.get("slotNo").asInt() : null;
-        LocalDateTime now = LocalDateTime.now();
-        SwapOrderRepository.OrderRow order = repo.findInfightByDevice(device.id());
-        if (order == null) {
+        SwapOrderRepository.OrderRow found = repo.findInfightByDevice(device.id());
+        if (found == null) {
             // 归属不到订单的事实必须留痕，不能丢
             registry.counter("swap.event.unmatched").increment();
-            repo.insertDiscrepancy(IdWorker.getId(), "UNMATCHED:" + envelope.msgId(), "UNMATCHED_EVENT",
-                    null, null, null, null, null, data.toString(),
-                    "设备上报 " + eventType + " 但无在途订单", device.tenantId());
+            txTemplate.executeWithoutResult(status -> repo.insertDiscrepancy(IdWorker.getId(),
+                    "UNMATCHED:" + envelope.msgId(), "UNMATCHED_EVENT", null, null, null, null, null,
+                    data.toString(), "设备上报 " + eventType + " 但无在途订单", device.tenantId()));
+            return;
+        }
+        long orderId = found.id();
+        locks.underLock(orderId, () -> {
+            txTemplate.executeWithoutResult(status -> consume(device, envelope, orderId));
+            return null;
+        });
+    }
+
+    /** 在订单锁 + 事务内消费一条事件（每一步都重新读订单，不拿旧快照去判分支）。 */
+    private void consume(DeviceDirectoryDao.Device device, Envelope envelope, long orderId) {
+        JsonNode data = envelope.data();
+        String eventType = data.path("eventType").asText(null);
+        Integer slotNo = data.hasNonNull("slotNo") ? data.get("slotNo").asInt() : null;
+        LocalDateTime now = LocalDateTime.now();
+        SwapOrderRepository.OrderRow order = repo.findOrder(orderId);
+        if (order == null) {
             return;
         }
         if (!repo.insertEventDedup(IdWorker.getId(), order.id(), eventType, envelope.msgId(), slotNo, now,
                 order.tenantId())) {
             registry.counter("swap.event.duplicate").increment();
+            log.info("重复事件已丢弃：order={}, type={}, msgId={}", order.orderNo(), eventType, envelope.msgId());
             return;
         }
+        // 跨进程联跑排障入口：没有这行就分不清“事件没到”与“到了但匹配不上”
+        log.info("换电事件到达：order={}, type={}, slot={}, step1={}, step2={}",
+                order.orderNo(), eventType, slotNo,
+                stateOfStep(order.id(), StepCode.OPEN_RETURN.order()), stateOfStep(order.id(), StepCode.WAIT_INSERT.order()));
         switch (eventType) {
             case "door_open" -> onDoorOpen(order, slotNo, envelope, now);
             case "battery_detected" -> onBatteryDetected(order, slotNo, data, now);
@@ -108,6 +137,11 @@ public class SwapFlowService {
             case "battery_taken" -> onBatteryTaken(order, slotNo, data, now);
             default -> registry.counter("swap.event.ignored", "type", eventType).increment();
         }
+    }
+
+    private String stateOfStep(long orderId, int stepNo) {
+        Map<String, Object> step = repo.step(orderId, stepNo);
+        return step == null ? "NULL" : String.valueOf(step.get("step_state"));
     }
 
     private void onDoorOpen(SwapOrderRepository.OrderRow order, Integer slotNo, Envelope envelope,
@@ -171,16 +205,28 @@ public class SwapFlowService {
             Long returnBattery = code == null ? null : batteryIdOf(code);
             repo.bindSlotsToOrder(order.id(), returnBattery, order.offerBatteryId());
             verifyAndOffer(order, returnBattery, now);
-        } else if (order.state().equals(OrderState.OFFERING.name()) && eq(slotNo, order.offerSlotNo())) {
+        } else if ((order.state().equals(OrderState.OFFERING.name())
+                || order.state().equals(OrderState.TAKEN.name())) && eq(slotNo, order.offerSlotNo())) {
             Map<String, Object> step5 = repo.step(order.id(), StepCode.WAIT_TAKE.order());
-            if (step5 == null || !"OPEN_CONFIRMED".equals(step5.get("step_state"))) {
+            if (step5 == null || !"OPEN_CONFIRMED".equals(String.valueOf(step5.get("step_state")))) {
                 return;
             }
+            // 柜机常在 1ms 内连发 battery_taken + door_close：take 已把订单推进到 TAKEN，
+            // 后到的关门事实不能再走状态机（TAKEN 上没有 door_close 的入边），
+            // 但它仍是必须留档的事实——不补这一支，“取完电池就关门”的单会永久停在 TAKEN。
+            boolean alreadyTaken = OrderState.TAKEN.name().equals(order.state());
             advanceStep(order.id(), StepCode.WAIT_TAKE.order(), StepState.OPEN_CONFIRMED.name(),
                     StepState.PHYSICS_DONE.name(), null, null, null);
             repo.setSlotDoor(order.cabinetId(), slotNo, "CLOSED", "LOCKED", now);
-            fireOrder(order.id(), OrderState.OFFERING, OrderEvent.EVT_DOOR_CLOSE_OFFER, "door_close@offer",
-                    slotNo, null, null);
+            if (alreadyTaken) {
+                registry.counter("swap.event.late_close").increment();
+                repo.appendEvent(IdWorker.getId(), order.id(), "door_close@offer_late",
+                        OrderState.TAKEN.name(), OrderState.TAKEN.name(), "DEVICE", null, null, null,
+                        slotNo, order.offerBatteryId(), null, now, null, null, order.tenantId());
+            } else {
+                fireOrder(order.id(), OrderState.OFFERING, OrderEvent.EVT_DOOR_CLOSE_OFFER, "door_close@offer",
+                        slotNo, null, null);
+            }
             settle(order, now);
         }
     }

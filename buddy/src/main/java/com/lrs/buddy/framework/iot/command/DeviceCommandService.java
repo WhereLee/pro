@@ -204,6 +204,14 @@ public class DeviceCommandService {
         if (row == null || row.state().isTerminal() || row.state() == CommandState.TIMEOUT) {
             return;
         }
+        // ACKED = 通信层已经完结（设备回了应答）。“动作到底有没有发生”不是指令层的职责，
+        // 而是步骤 deadline 的职责（收敛到 UNCONFIRMED/反查）。对 ACKED 再推 TIMEOUT 是非法迁移，
+        // 会每轮刷一次 ERROR 日志——跨进程联跑把它们跑出来后才能在日志里看见。
+        if (row.state() == CommandState.ACKED) {
+            registry.counter("cmd.timeout.skipped", "reason", "already_acked").increment();
+            log.debug("指令已 ACK，不再按超时处理：cmdId={}", cmdId);
+            return;
+        }
         // CREATED = 根本没送达设备（离线、抢不到连接），它的超时语义是"指令过期"而不是"送达了没回"。
         // 两者必须分开：EXPIRED 代表零物理动作（上层可走 REJECTED / 重下单），
         // TIMEOUT 代表"可能已经执行"（必须反查）。混掉就再也分不出这两种处置。
