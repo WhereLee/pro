@@ -180,5 +180,18 @@
   症状是测试挂住而不是报错）—— 同一个坑两次在不同代码里重现，证明它值得写进文档而不只是注释。
   自证：`buddy-sim` **20 用例全绿**（原 15 + 新 5）；`buddy` **120 用例全绿 + JaCoCo 达标**。
   仍未做：两个独立进程的跨进程联跑（属 M3 混沌/场景 DSL 范畴），以及设备注册接口取密钥（M2）。
+- 2026-09-30：**M2 第一批：台账、凭证、分配策略与双状态机代码化**——
+  新增 `biz/swap/provision/DeviceProvisionService`（明文密钥只返回一次、轮转即失效）、
+  `biz/swap/service/SwapLedgerService`（建柜机硬卡"设备已注册且启用"、资产双向引用同事务）、
+  `biz/swap/alloc/SlotAllocator`（纯函数：硬门槛一条不减 + 三档优先级链 + SOC 只做门槛 + 同人惩罚降权不剔除）、
+  `biz/swap/order`（OrderState/OrderEvent/SwapOrderFsm/StepCode/StepState/SwapStepFsm）。
+  状态机用**穷举测试**而非挑正例：正例只能证明登记过的边对，证明不了未登记的边被正确拒绝，
+  而线上出事恰好是"某状态下收到一个不该收的事件"——穷举把它钉成 IllegalStateTransitionException。
+  穷举首次运行就抓出一处语义矛盾：步骤态把 PHYSICS_DONE 当终态，但 §4.2 主线是 PHYSICS_DONE→VERIFIED
+  （S3 核验发生在物理完成之后）；已修正并在注释里分清 isTerminal() 与 isDone() 是两个问题。
+  设计口径：§5 里的分岔事件拆成**事实粒度**（如 DEADLINE_S1_DOOR_OPEN/CLOSED/UNKNOWABLE），
+  否则一条 `(state,event)` 对应三个目标态，“未列出即非法”会退化成“运行时再说”。
+  契约闭环从“文档↔DDL”扩成**文档↔DDL↔代码枚举**三方对齐（SwapDdlContractTest 新增两条）。
+  自证：`mvn verify` **168 用例全绿 + JaCoCo 达标**。
 - 2026-09-29：**CI 结果核查与文档备案（用户要求）**——用 gh CLI 直连核查首次完整流水线（run 36565377941 · `225a079`）：`backend`/`frontend`/`mysql-consistency`/`e2e`/`docker` 五 job 全绿（其中 docker 为新增 job 首跑通过），唯一红为 `security-scan`——根因：`aquasecurity/trivy-action@0.28.0` 引用缺 `v` 前缀（该库 tag 为 `vX.Y.Z`，`0.28.0` ref 实测 404；修复过程见下条）。新增 `buddy/docs/ci.md`：流水线全景 / gh 查看与重跑手册 / 已知问题与修复 / 异地（服务器）能力对齐要点（不含任何凭据），README 文档索引同步。
 - 2026-09-29：**security-scan 修复闭环（用户批准）**——补 `v` 前缀（commit 159d806）后仍红，暴露第二层根因：`trivy-action@v0.28.0` 内部 pin 的 `aquasecurity/setup-trivy@v0.2.1` tag 已被上游删除（嵌套 composite 引用失效）；改升 `trivy-action@v0.36.0`（内部改 pin setup-trivy 至 commit SHA / v0.2.6，不再受删 tag 影响；6 个在用输入已核对），commit 978360b 推送后 run 36567189359 **6/6 全绿**。ci.md §3/§4.1 同步修订为最终版并推送。教训：pin 第三方 action 时，嵌套引用链的间接依赖 tag 也可能被上游删除，优先选内部以 SHA pin 依赖的版本。

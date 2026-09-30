@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -149,6 +150,45 @@ class SwapDdlContractTest {
         }
         assertThat(docStates).as("DB 与文档的步骤态集合不一致").containsExactlyInAnyOrderElementsOf(
                 unquotedSet(checkEnumOfColumn(migrationSql(), "swap_order_step", "ck_step_state")));
+    }
+
+    /**
+     * M2 把状态机从文档落成了代码（biz/swap/order），于是三方关系变成：
+     * 文档 §4 ↔ V9 CHECK ↔ Java 枚举。前两行已有断言，本条把第三行钉上。
+     *
+     * 为什么要单独钉代码：代码里的枚举多一个/少一个时，DB 与文档仍然自洽，
+     * 但运行时会出现"枚举能拼出、库拒写入"（或反之）这种只能在生产现场复现的错。
+     */
+    @Test
+    @DisplayName("代码枚举必须与 DB 枚举逐字一致（订单态/步骤态/步骤码）")
+    void codeEnumsMatchDatabaseEnums() {
+        Set<String> codeStates = Arrays.stream(com.lrs.buddy.biz.swap.order.OrderState.values())
+                .map(Enum::name).collect(Collectors.toCollection(LinkedHashSet::new));
+        assertThat(codeStates).as("OrderState 与 swap_order.order_state 不一致")
+                .containsExactlyInAnyOrderElementsOf(
+                        unquotedSet(checkEnumOfColumn(migrationSql(), "swap_order", "ck_ord_state")));
+
+        Set<String> codeStepStates = Arrays.stream(com.lrs.buddy.biz.swap.order.StepState.values())
+                .map(Enum::name).collect(Collectors.toCollection(LinkedHashSet::new));
+        assertThat(codeStepStates).as("StepState 与 swap_order_step.step_state 不一致")
+                .containsExactlyInAnyOrderElementsOf(
+                        unquotedSet(checkEnumOfColumn(migrationSql(), "swap_order_step", "ck_step_state")));
+
+        Set<String> codeStepCodes = Arrays.stream(com.lrs.buddy.biz.swap.order.StepCode.values())
+                .map(Enum::name).collect(Collectors.toCollection(LinkedHashSet::new));
+        assertThat(codeStepCodes).as("StepCode 与 swap_order_step.step_code 不一致")
+                .containsExactlyInAnyOrderElementsOf(
+                        unquotedSet(checkEnumOfColumn(migrationSql(), "swap_order_step", "ck_step_code")));
+    }
+
+    @Test
+    @DisplayName("代码里的在途集合必须等于 active_user 生成列的列表")
+    void codeInFlightMatchesActiveUserColumn() {
+        Set<String> codeInFlight = Arrays.stream(com.lrs.buddy.biz.swap.order.OrderState.values())
+                .filter(com.lrs.buddy.biz.swap.order.OrderState::isInfight)
+                .map(Enum::name).collect(Collectors.toCollection(LinkedHashSet::new));
+        assertThat(codeInFlight).as("B3 的 Java 口径与 DB 口径必须同集合")
+                .containsExactlyInAnyOrderElementsOf(inFlightStatesFromActiveUserColumn());
     }
 
     @Test
