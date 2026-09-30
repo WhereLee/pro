@@ -231,8 +231,19 @@ class SimBrokerRoundTripTest {
 
         SimProtocol.Envelope reply = awaitReply(2);
         assertThat(reply).as("注入了不应答故障，云侧本就不该收到应答").isNull();
-        assertThat(device.cabinet().slot(3).door).as("但门确实开了——云侧若把超时当没发生就会错判")
-                .isEqualTo(CabinetDevice.Door.OPEN);
+
+        // 断言副作用必须等它发生，不能“睡固定时长后看一眼”：
+        // CI 机器偏慢时会误报“门没开”（本地 3 轮绿、CI 红就是这个形状）。
+        boolean opened = false;
+        for (int i = 0; i < 60; i++) {
+            if (device.cabinet().slot(3).door == CabinetDevice.Door.OPEN) {
+                opened = true;
+                break;
+            }
+            Thread.sleep(100);
+        }
+        assertThat(opened).as("但门确实开了——云侧若把超时当没发生就会错判")
+                .isTrue();
     }
 
     @Test
