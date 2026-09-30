@@ -111,7 +111,7 @@ class SwapFiCloudEffectsTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM swap_order_event WHERE order_id = ? "
                 + "AND event_type = 'door_open@return'", Integer.class, orderId))
                 .as("事实事件表也只允许一条").isEqualTo(1);
-        // 资产
+        // 资产（按本单范围统计）
         assertThat(jdbc.queryForObject("SELECT door_state FROM swap_slot WHERE cabinet_id = ? AND slot_no = ?",
                 String.class, cabinetId(orderId), returnSlot)).isEqualTo("OPEN");
         // 权益
@@ -132,12 +132,12 @@ class SwapFiCloudEffectsTest {
                 "FI05C-" + SEQ.incrementAndGet())), clientId, 1);
         settle();
 
-        // 状态：没有 door_open 在前，关门不能承认"投好了"
+        // 资产（必须按本单范围查：全库共用一个 H2，前面换电主线用例会留下 ACTIVE 绑定，
+        // 拿全库计数断 isZero 就是本仓库第三次跨用例污染同型错）
         assertThat(orderState(orderId)).isEqualTo("RETURNING");
         assertThat(stepState(orderId, 1)).as("S1 不能被一条倒挂的关门推进").isNotEqualTo("OPEN_CONFIRMED");
         assertThat(stepState(orderId, 2)).isNotEqualTo("PHYSICS_DONE");
-        // 资产
-        assertThat(activeBindings()).as("乱序事件不得改归属").isZero();
+        assertThat(bindingsForOrder(orderId)).as("乱序事件不得改归属").isZero();
         // 权益
         assertThat(rightState(orderId)).isEqualTo("OCCUPIED");
         // 工单与差异：云侧"知道门要开却没收到开门"不该被伪装成账实差异（那是设备侧漏报才该记的）
@@ -167,7 +167,7 @@ class SwapFiCloudEffectsTest {
 
         // 状态/资产/权益：安全事件规则引擎属 M5，这里断言的是"没被偷偷推进"
         assertThat(orderState(orderId)).isEqualTo("RETURNING");
-        assertThat(activeBindings()).isZero();
+        assertThat(bindingsForOrder(orderId)).isZero();
         assertThat(rightState(orderId)).isEqualTo("OCCUPIED");
         // 工单与告警：必须有计数——M5 接上处置后这条断言会失败并逼我们更新用例，而不是永远看不见
         assertThat(counterValue("swap.event.ignored", "alarm"))
@@ -191,6 +191,7 @@ class SwapFiCloudEffectsTest {
         data.put("eventType", "battery_detected");
         data.put("slotNo", 1);
         data.put("batteryCode", "BAT-UNKNOWN-1");
+        long bindingsBefore = activeBindings();
         router.dispatch("swap/v1/up/" + PRODUCT_KEY + "/" + orphanId + "/event",
                 codec.encode(envelope(orphanId, "X6-" + SEQ.incrementAndGet(), data)),
                 PRODUCT_KEY + "::" + orphanId, 1);
@@ -204,8 +205,8 @@ class SwapFiCloudEffectsTest {
         // 状态：没有任何订单被这条报文造出来（全库共用一个 H2，所以只能比增量）
         assertThat(count("SELECT COUNT(*) FROM swap_order") - ordersBefore)
                 .as("无归属上报不得造出订单").isZero();
-        // 资产：不能因为一个来路不明的上报就改归属
-        assertThat(activeBindings()).isZero();
+        // 资产：不能因为一个来路不明的上报就改归属（比增量，同样因为全库共享）
+        assertThat(activeBindings() - bindingsBefore).isZero();
         // 权益：不能被动流水
         assertThat(count("SELECT COUNT(*) FROM swap_right_transaction") - rightTxBefore).isZero();
     }
@@ -296,7 +297,15 @@ class SwapFiCloudEffectsTest {
         return step == null ? null : String.valueOf(step.get("step_state"));
     }
 
+    /** 本单产生的绑定（本用例范围内才能断 0）。 */
+    private int bindingsForOrder(long orderId) {
+        Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM swap_battery_binding WHERE order_id = ? "
+                + "AND bind_state = 'ACTIVE'", Integer.class, orderId);
+        return n == null ? 0 : n;
+    }
+
     private int activeBindings() {
+        // 只用于"前后差值"，不得直接断 0：全库共用一个 H2，其他用例会留下 ACTIVE 绑定
         Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM swap_battery_binding WHERE bind_state = 'ACTIVE'",
                 Integer.class);
         return n == null ? 0 : n;

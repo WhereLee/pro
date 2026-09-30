@@ -31,10 +31,26 @@ PHONE="139$(printf '%08d' $((RANDOM % 100000000)))"
 
 api() {  # api METHOD PATH [JSON] [TOKEN]
   local method="$1" path="$2" body="${3:-}" token="${4:-}"
-  local args=(-fsS -X "$method" "$BASE$path" -H 'content-type: application/json; charset=utf-8')
-  [ -n "$token" ] && args+=(-H "Authorization: Bearer $token")
-  [ -n "$body" ] && args+=(-d "$body")
-  curl "${args[@]}"
+  local args=(-sS -X "$method" "$BASE$path" -H 'content-type: application/json; charset=utf-8')
+  if [ -n "$token" ]; then args+=(-H "Authorization: Bearer $token"); fi
+  if [ "$token" = "null" ]; then
+    # 专门报这一种：jq 取不到字段时返回字面量 "null"，看起来"有值"但其实没令牌
+    echo "!! api $method $path：token 是字面量 null（上一步没从响应里取到令牌）" >&2
+  fi
+  if [ -n "$body" ]; then args+=(-d "$body"); fi
+  local out status
+  # 自己拿 HTTP 码而不是用 -f：401 的响应体里带业务 message，裸 "curl (22)" 定位不了是谁拒的
+  if ! out="$(curl "${args[@]}" -w $'\n%{http_code}')"; then
+    echo "!! api $method $path：curl 失败（连不上或对端断连）" >&2
+    return 1
+  fi
+  status="${out##*$'\n'}"
+  if [ "$status" -ge 400 ]; then
+    echo "!! api $method $path → HTTP $status，带令牌=$([ -n "$token" ] && echo yes || echo no)" >&2
+    printf '%s\n' "${out%$'\n'*}" >&2
+    return 1
+  fi
+  printf '%s' "${out%$'\n'*}"
 }
 
 need_code() {  # need_code JSON_RESPONSE —— code!=200 直接失败并打印 message
@@ -53,15 +69,15 @@ echo "设备=$DEVICE 柜机=$CABINET 会员手机=$PHONE"
 admin_login="$(api POST /auth/login "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}")"
 need_code "$admin_login"
 admin="$(printf '%s' "$admin_login" | jq -r .data.token)"
-credential="$(api POST /swap/devices "{\"productKey\":\"$PRODUCT\",\"deviceId\":\"$DEVICE\",\"deviceName\":\"跨进程联跑柜\"}")"
+credential="$(api POST /swap/devices "{\"productKey\":\"$PRODUCT\",\"deviceId\":\"$DEVICE\",\"deviceName\":\"跨进程联跑柜\"}" "" "$admin")"
 need_code "$credential"
 # 主密钥只在开通响应里出现一次；用错密钥会被 Broker 直接拒（NOT_AUTHORIZED）
 SECRET="$(printf '%s' "$credential" | jq -r .data.masterSecret)"
 [ -n "$SECRET" ] && [ "$SECRET" != "null" ] || { echo "开通接口未返回主密钥" >&2; exit 1; }
 
-need_code "$(api POST /swap/cabinets "{\"siteId\":1,\"productKey\":\"$PRODUCT\",\"cabinetNo\":\"$CABINET\",\"deviceId\":\"$DEVICE\",\"slotCount\":8}")"
-need_code "$(api POST "/swap/cabinets/$CABINET/batteries" "{\"batteryCode\":\"$OFFER\",\"productKey\":\"BAT-60V20AH\",\"slotNo\":1,\"soc\":98,\"temp\":27.0,\"capacityAh\":20.0,\"voltageV\":60.0}")"
-need_code "$(api POST "/swap/cabinets/$CABINET/batteries" "{\"batteryCode\":\"$OLD\",\"productKey\":\"BAT-60V20AH\",\"slotNo\":2,\"soc\":30,\"temp\":27.0,\"capacityAh\":20.0,\"voltageV\":60.0}")"
+need_code "$(api POST /swap/cabinets "{\"siteId\":1,\"productKey\":\"$PRODUCT\",\"cabinetNo\":\"$CABINET\",\"deviceId\":\"$DEVICE\",\"slotCount\":8}" "" "$admin")"
+need_code "$(api POST "/swap/cabinets/$CABINET/batteries" "{\"batteryCode\":\"$OFFER\",\"productKey\":\"BAT-60V20AH\",\"slotNo\":1,\"soc\":98,\"temp\":27.0,\"capacityAh\":20.0,\"voltageV\":60.0}" "" "$admin")"
+need_code "$(api POST "/swap/cabinets/$CABINET/batteries" "{\"batteryCode\":\"$OLD\",\"productKey\":\"BAT-60V20AH\",\"slotNo\":2,\"soc\":30,\"temp\":27.0,\"capacityAh\":20.0,\"voltageV\":60.0}" "" "$admin")"
 
 # 2) C 端：注册即登录 → 发放额度 → 实名（MOCK 短信通道回显验证码）
 code="$(api POST /member/auth/sms-code "{\"phone\":\"$PHONE\",\"purpose\":\"LOGIN\"}" | jq -r .data.echoCode)"

@@ -147,25 +147,48 @@ public final class ScenarioRunner {
     }
 
     private void assertStep(int index, JsonNode step) {
+        long timeoutMs = step.path("timeoutMs").asLong(8000);
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        List<String> failures;
+        do {
+            failures = checkAssertions(step);
+            if (failures.isEmpty()) {
+                // “缺席类断言”（absentEvents / replyCount=0）只在一个有限窗口内成立不能算数：
+                // 满足后再复检一次，晚到的事件仍会被抓出来。
+                sleep(step.path("recheckMs").asLong(600));
+                failures = checkAssertions(step);
+                break;
+            }
+            sleep(100);
+        } while (System.currentTimeMillis() < deadline);
+        // 上面这个循环是必需而不是优化：报文投递异步、CI 机器比本机慢得多，
+        // “睡固定时长后看一眼”会把正常行为报成缺陷（实测 CI 34 条里红 15 条，本机全绿）。
+        // 与 M3 阶段 0 修 FI-01 时是同一条纪律：副作用断言要等它发生，而不是猜时间。
+        if (failures.isEmpty()) {
+            ok(index, "assert", "断言通过");
+        } else {
+            results.add(new StepResult(index, "assert", false,
+                    String.join(" | ", failures) + "（已轮询等待 " + timeoutMs + "ms）"));
+        }
+    }
+
+    /** 一轮完整的断言求值（可重入：不改状态，只读观测）。 */
+    private List<String> checkAssertions(JsonNode step) {
         List<String> failures = new ArrayList<>();
         String cmd = step.hasNonNull("cmd") ? step.path("cmd").asText() : null;
-        // 先给一个稳定窗口：刚发出的报文可能还在跳线程上。
-        // 不等就直接数条数，“缺事件”会被当成缺陷报出来（实测：同一条正常主线先看到 battery_detected、
-        // 后才看到 door_close，少了这个窗口时断言随机红）。
-        sleep(step.path("settleMs").asLong(300));
 
         if (step.hasNonNull("waitEvent")) {
             String eventType = step.path("waitEvent").asText();
-            if (!cloud.awaitEvent(eventType, step.path("timeoutMs").asLong(2000))) {
+            if (cloud.eventsOfType(eventType).isEmpty()) {
                 failures.add("期望事件未出现：" + eventType + "；实际到达顺序=" + cloud.arrivalOrder());
             }
         }
         if (cmd != null && step.hasNonNull("replyCode")) {
             String expected = step.path("replyCode").asText();
-            if (!cloud.awaitReply(cmd, step.path("timeoutMs").asLong(2000))) {
+            List<SimProtocol.Envelope> replies = cloud.replies(cmd);
+            if (replies.isEmpty()) {
                 failures.add("指令 " + cmd + " 没有任何应答；实际到达顺序=" + cloud.arrivalOrder());
             } else {
-                List<SimProtocol.Envelope> replies = cloud.replies(cmd);
                 String actual = replies.get(replies.size() - 1).code();
                 if (!expected.equals(actual)) {
                     failures.add("应答码期望 " + expected + "，实际 " + actual);
@@ -175,10 +198,6 @@ public final class ScenarioRunner {
         // 被设备拒绝的报文不带 cmd（它不信一个验不过签的报文里的 cmd），所以只能按 code 断言
         if (step.hasNonNull("anyReplyCode")) {
             String expected = step.path("anyReplyCode").asText();
-            long deadline = System.currentTimeMillis() + step.path("timeoutMs").asLong(2000);
-            while (!cloud.hasReplyCode(expected) && System.currentTimeMillis() < deadline) {
-                sleep(50);
-            }
             if (!cloud.hasReplyCode(expected)) {
                 failures.add("期望出现错误码应答 " + expected + "，实际收到的 code="
                         + cloud.codedReplies().stream().map(SimProtocol.Envelope::code).toList());
@@ -245,11 +264,7 @@ public final class ScenarioRunner {
             }
         }
 
-        if (failures.isEmpty()) {
-            ok(index, "assert", "断言通过");
-        } else {
-            results.add(new StepResult(index, "assert", false, String.join(" | ", failures)));
-        }
+        return failures;
     }
 
     private void ok(int index, String doWhat, String detail) {
