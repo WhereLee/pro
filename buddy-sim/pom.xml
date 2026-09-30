@@ -28,6 +28,23 @@
         <assertj.version>3.26.3</assertj.version>
     </properties>
 
+    <!--
+      对齐 netty 版本：不声明时 hivemq-mqtt-client 会拉到 4.1.99.Final，
+      而那个版本带 CRITICAL 级 CVE，会被 CI 的 Trivy 硬门禁直接拦下。
+      与云侧（Spring Boot 管理）保持同一小版本，顺便避免两侧行为差异。
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>4.1.135.Final</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <dependency>
             <groupId>com.hivemq</groupId>
