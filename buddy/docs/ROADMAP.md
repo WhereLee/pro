@@ -180,6 +180,22 @@
   症状是测试挂住而不是报错）—— 同一个坑两次在不同代码里重现，证明它值得写进文档而不只是注释。
   自证：`buddy-sim` **20 用例全绿**（原 15 + 新 5）；`buddy` **120 用例全绿 + JaCoCo 达标**。
   仍未做：两个独立进程的跨进程联跑（属 M3 混沌/场景 DSL 范畴），以及设备注册接口取密钥（M2）。
+- 2026-09-30：**M2 第 9 批（B3）：后台订单管理 + 人工干预双人复核**——
+  V16 建 `swap_intervention`（含 `ck_iv_two_person` 与 `uk_iv_active` 生成列）+ 新权限码 `swap:order:approve`；
+  `SwapInterventionService`/`SwapInterventionRecorder`（审批先独立提交再执行）/`AdminSwapOrderController`
+  （分页带展示态、详情含步骤+事件流+干预史）+ 前端 `biz/swap/order.vue`（列表/抽屉详情/申请/复核队列）。
+  语义修正（测试把我对状态机的误读抓出来了）：`ADMIN_ABORT` 的落点是 `FAILED_MANUAL`，不是 ABORTING；
+  所以人工中止只冻结现场（不退权益、不释放预占），方向由 `ADMIN_RESOLVE_*` 在复核后决定。
+  本批自己犯的错：① **CAS 的 WHERE 里写 `approver_id <> applicant_id`**，那一刻该列还是 NULL，
+  三值逻辑下条件恒为 UNKNOWN → 所有审批匹配 0 行，“通过/驳回默默无效”（双人约束本就由表级 CHECK 兜住）；
+  ② 十四个列十个占位符多传了 tenant_id；③ 干预理由拼接进 `release_reason VARCHAR(32)` 写超长，
+  改成“短码进台账、长理由进审计与事件流”并在 repo 边界加截断防线；
+  ④ `swap_discrepancy.kind` 是枚举闭集，新造的 `ADMIN_RESOLVE_NO_DEVICE_FACT` 被 CHECK 拒（应用已有的
+  `FACT_MISSING`）；⑤ 往生成列 `active_user` 写值（测试脚本的错）；⑥ 一次 SearchReplace 把方法体改坏（重复残留），
+  立即读回原地修复。
+  自证：`mvn verify` **211 用例全绿 + JaCoCo 达标**（新增 `SwapInterventionTest` 8 例）；`vue-tsc` + 构建通过。
+  未完：柜机监控/电池资产/差异台账三个后台页（V11 预置了菜单，现在会落 404 回退，需先补列表接口，
+  不先造假页面）。
 - 2026-09-30：**M2 第 8 批（B2）：C 端 H5 主链路**——
   后端 `DisplayState`（订单态→展示态的唯一映射，漏登记直接抛）+ `MemberSwapService`/`MemberSwapController`；
   前端独立 `api/member.ts`（独立 axios 实例 + 独立令牌存储 + 401 时先用 refresh 换一次并重试，只重试一次）、

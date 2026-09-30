@@ -298,11 +298,22 @@ public class SwapOrderRepository {
     /**
      * 释放预占。置 RELEASED 而不是删行：
      * 删行会让"这个仓曾被谁占过"这件事失去记录，而补偿与对账全靠它。
+     *
+     * 原因字段只有 32 宽（存的是短码，人工长篇理由属于审计表与事件流），
+     * 这里额外截一道：写超会直接报错（比默默截断更危险的是整个补偿因写不进去而失败）。
      */
     public int releaseReservations(long orderId, String reason, LocalDateTime now) {
         return jdbc.update("UPDATE swap_slot_reservation SET resv_state = 'RELEASED', released_at = ?, "
-                + "release_reason = ?, update_time = ? WHERE order_id = ? AND resv_state = 'ACTIVE'",
-                Timestamp.valueOf(now), reason, Timestamp.valueOf(now), orderId);
+                        + "release_reason = ?, update_time = ? WHERE order_id = ? AND resv_state = 'ACTIVE'",
+                Timestamp.valueOf(now), cut(reason, 32), Timestamp.valueOf(now), orderId);
+    }
+
+    /** 截断到列宽；只用于原因/备注类非关键字段（金额、状态、id 绝不靠截断保护）。 */
+    private static String cut(String value, int max) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= max ? value : value.substring(0, max);
     }
 
     // ---------------- 会员 / 权益 / 柜机 / 候选仓 ----------------
@@ -354,7 +365,7 @@ public class SwapOrderRepository {
                         balance_after, occurred_at, ts_millis, reason, trace_id, create_time, tenant_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?, ?)
                 """, id, memberId, accountId, orderId, kind, deltaTimes, balanceAfter, Timestamp.valueOf(now),
-                now.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli(), reason, traceId,
+                now.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli(), cut(reason, 64), traceId,
                 Timestamp.valueOf(now), tenantId);
     }
 
@@ -630,6 +641,44 @@ public class SwapOrderRepository {
         Integer minSoc = jdbc.queryForObject("SELECT COALESCE(MIN(product_min_soc), 80) FROM swap_site "
                 + "WHERE del_flag = 0", Integer.class);
         return minSoc == null ? 80 : minSoc;
+    }
+
+    /**
+     * 后台订单分页：条件拼接只允许白名单字段，不接外部传入的列名/排序串。
+     *
+     * 分页用 size 上限 + 参数绑定；`ORDER BY create_time DESC, id DESC` 固定写死：
+     * 把排序交给前端就是 SQL 注入面，而后台列表的合理排序就这一种。
+     */
+    public List<Map<String, Object>> pageOrders(String state, String orderNo, int offset, int size) {
+        StringBuilder sql = new StringBuilder("SELECT id, order_no, user_id, cabinet_id, return_slot_no, offer_slot_no, "
+                + "order_state, right_state, source, create_time, deadline_at, trace_id FROM swap_order WHERE 1 = 1");
+        List<Object> args = new java.util.ArrayList<>();
+        if (state != null && !state.isBlank()) {
+            sql.append(" AND order_state = ?");
+            args.add(state);
+        }
+        if (orderNo != null && !orderNo.isBlank()) {
+            sql.append(" AND order_no LIKE ?");
+            args.add("%" + orderNo.trim() + "%");
+        }
+        sql.append(" ORDER BY create_time DESC, id DESC LIMIT ")
+                .append(Math.max(1, Math.min(size, 100))).append(" OFFSET ").append(Math.max(0, offset));
+        return jdbc.queryForList(sql.toString(), args.toArray());
+    }
+
+    public int countOrders(String state, String orderNo) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM swap_order WHERE 1 = 1");
+        List<Object> args = new java.util.ArrayList<>();
+        if (state != null && !state.isBlank()) {
+            sql.append(" AND order_state = ?");
+            args.add(state);
+        }
+        if (orderNo != null && !orderNo.isBlank()) {
+            sql.append(" AND order_no LIKE ?");
+            args.add("%" + orderNo.trim() + "%");
+        }
+        Integer total = jdbc.queryForObject(sql.toString(), Integer.class, args.toArray());
+        return total == null ? 0 : total;
     }
 
     private static String firstNonBlank(String a, String b) {

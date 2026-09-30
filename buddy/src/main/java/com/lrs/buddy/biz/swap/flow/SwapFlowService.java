@@ -430,6 +430,63 @@ public class SwapFlowService {
         fireOrder(orderId, OrderState.ABORTING, OrderEvent.ABORT_DONE, "abort_done", null, null, null);
     }
 
+    // ---------------- 人工干预（双人复核通过后才调用）----------------
+
+    /**
+     * 人工判中止：落 {@code FAILED_MANUAL}（而不是直接 ABORTED）。
+     *
+     * 这不是多做一步：人工按下“中止”时，系统其实不知道到底是“没换成”还是“电池已被取走”，
+     * 而这两个结论的资金与资产处置完全相反。所以 ADMIN_ABORT 只负责**冻结现场**（预占与权益保持原状），
+     * 真正的方向由后续 {@code ADMIN_RESOLVE_COMPLETED} / {@code ADMIN_RESOLVE_ABORTED} 在复核后定。
+     */
+    @Transactional
+    public void adminAbort(long orderId, String reason) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        fireOrder(orderId, OrderState.valueOf(order.state()), OrderEvent.ADMIN_ABORT, "admin_abort",
+                null, null, null);
+        log.info("人工判中止，进入待核资：order={}, reason={}", order.orderNo(), reason);
+    }
+
+    /**
+     * 人工判定“换电已完成”（仅用于 FAILED_MANUAL 这种自动裁决不可达的单）。
+     *
+     * 做资金侧收尾（预占→实扣）+ 释放预占台账，同时候一条差异台账：
+     * **新电池的资产归属不由这里改**——设备没报过“已被取走”这个事实，人工判完成
+     * 不能伪造一个事实；归属需另走“归属核销”（swap:battery:reconcile，带自己审计）。
+     * 这不是少做，而是把“人说了算”与“设备报过”两类事实分开存，否则事后无法归因。
+     */
+    @Transactional
+    public void adminResolveCompleted(long orderId, String reason) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        LocalDateTime now = LocalDateTime.now();
+        fireOrder(orderId, OrderState.valueOf(order.state()), OrderEvent.ADMIN_RESOLVE_COMPLETED,
+                "admin_resolve_completed", null, null, null);
+        SwapOrderRepository.OrderRow fresh = requireOrder(orderId);
+        if ("OCCUPIED".equals(fresh.rightState())) {
+            SwapOrderRepository.AccountRow account = repo.findAccount(fresh.userId());
+            if (account != null && repo.deductRight(account.id(), fresh.userId(), orderId, now, null,
+                    fresh.tenantId())) {
+                repo.updateRightState(orderId, "DEDUCTED");
+            }
+        }
+        repo.releaseReservations(orderId, "ADMIN_RESOLVE_COMPLETED", now);
+        repo.insertDiscrepancy(IdWorker.getId(), "ADMIN-COMP-" + orderId, "FACT_MISSING",
+                orderId, fresh.cabinetId(), fresh.offerBatteryId(), fresh.userId(), null,
+                "{\"operator_decision\":\"COMPLETED\"}", "人工落终且无设备事实支撑：" + reason, fresh.tenantId());
+    }
+
+    /** 人工判定“本次未发生换电”：先补偿（退预占/退权益/仓态回落），再落 ABORTED（I8）。 */
+    @Transactional
+    public void adminResolveAborted(long orderId, String reason) {
+        SwapOrderRepository.OrderRow order = requireOrder(orderId);
+        LocalDateTime now = LocalDateTime.now();
+        // 传给补偿的是短码（台账原因字段只有 32 宽），人工长篇理由留在干预表与事件流里
+        compensate(order, "ADMIN_RESOLVE_ABORTED", now);
+        fireOrder(orderId, OrderState.valueOf(requireOrder(orderId).state()), OrderEvent.ADMIN_RESOLVE_ABORTED,
+                "admin_resolve_aborted", null, null, null);
+        log.info("人工判定未发生换电，已回滚并落 ABORTED：order={}, reason={}", order.orderNo(), reason);
+    }
+
     /**
      * 用户声明“我把门关上了”（§5.3 #22/#23，B2）。
      *

@@ -132,8 +132,20 @@
 >    （套餐购买属 M4），页面必须先引导实名与提示额度不足，而不是绕过 guard。
 >    地图/经纬度属外部硬约束，找柜先按站点列出（已标注）。
 >
-> **待做**：后台管理页与人工干预（双人复核）、I1–I10 逐条实证收尾、跨进程联跑进 CI、
-> M4 的套餐购买（目前新会员额度为 0，由测试直接授予）。
+> ⑩c **后台订单管理与人工干预（B3 第一部分）**：`swap_intervention` 表（V16）+
+> `SwapInterventionService`/`SwapInterventionRecorder`/`AdminSwapOrderController` + 前端 `biz/swap/order.vue`。
+>    **双人复核落在哪**：不在二次确认弹窗，而在（一）权限码分开 `swap:order:intervene` / `swap:order:approve`
+>    （同一个码 = 能申请就能自己批），（二）`ck_iv_two_person` 表级 CHECK 直接拒绝审批人=申请人，
+>    （三）服务层前置校验，（四）同一单只允许一条待处理申请（`uk_iv_active` 生成列）。
+>    审批记录先 `REQUIRES_NEW` 独立提交再执行订单动作：执行失败必须留下 FAILED + 原因，而不是“什么都没发生”。
+>    申请阶段就用 `canFire` 校验状态机：注定失败的申请不该进复核队列占位。
+>    `ADMIN_ABORT` 的落点是 `FAILED_MANUAL`（**只冻结现场**）而不是 `ABORTED`：
+>    人工按“中止”时系统并不知道是“没换成”还是“电池已被取走”，两者处置相反，方向由后续 RESOLVE_* 定。
+>    `ADMIN_RESOLVE_COMPLETED` 做资金实扣 + 释放预占 + 记一条 `FACT_MISSING` 差异台账，
+>    但**不伪造设备事实改资产归属**（归属需另走 `swap:battery:reconcile`）。
+>
+> **待做**：柜机监控/电池资产/差异台账三个后台页（V11 已预置菜单，目前落 404 回退，需补列表接口）、
+> I1–I10 逐条实证收尾、跨进程联跑进 CI、M4 的套餐购买（目前新会员额度为 0，由测试直接授予）。
 
 台账（站点/柜机/仓位/电池）→ 订单 + 步骤双状态机 → 分配策略（硬门槛 + 3 档优先级链 + 同人连续分配惩罚）→ 物理事件匹配器 → `swap_result` 交叉核对 → **四层并发**（柜分段锁 + ShedLock + `@Version` CAS + DB 生成列唯一约束）→ C 端 H5 主链路 → 后台管理页。
 
