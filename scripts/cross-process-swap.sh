@@ -68,7 +68,14 @@ echo "设备=$DEVICE 柜机=$CABINET 会员手机=$PHONE"
 # 1) 后台身份 + 设备开通 + 建账 + 电池入仓（只一块满电电池，让取电仓唯一确定）
 admin_login="$(api POST /auth/login "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}")"
 need_code "$admin_login"
-admin="$(printf '%s' "$admin_login" | jq -r .data.token)"
+admin="$(printf '%s' "$admin_login" | jq -r '.data.token // empty')"
+# 令牌为空时不能往下走：以前会静默带空令牌去请求，症状是下一步 401，
+# 看起来像“鉴权坏了”而不是“字段路径错了”。现在直接把响应结构打出来自证。
+if [ -z "$admin" ]; then
+  echo "!! 登录响应里没有 data.token；实际顶层键=$(printf '%s' "$admin_login" | jq -r 'keys | join(",")')，data 键=$(printf '%s' "$admin_login" | jq -r '(.data // {}) | keys | join(",")')" >&2
+  exit 1
+fi
+echo "后台登录 OK（令牌长度=${#admin}）"
 credential="$(api POST /swap/devices "{\"productKey\":\"$PRODUCT\",\"deviceId\":\"$DEVICE\",\"deviceName\":\"跨进程联跑柜\"}" "" "$admin")"
 need_code "$credential"
 # 主密钥只在开通响应里出现一次；用错密钥会被 Broker 直接拒（NOT_AUTHORIZED）
