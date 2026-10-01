@@ -1,0 +1,24 @@
+# Line endings must be decided by the repo, not by each machine's core.autocrlf.
+# Real incident (2026-10-01): with local core.autocrlf=true the bash script was stored
+# in the blob as CRLF (working tree looked like LF). On Linux CI the trailing CR became
+# part of the last argument: "$admin" expanded as the undefined variable admin<CR> => empty
+# => next request 401 with "token=no" even though login succeeded. See ROADMAP 5.
+* text=auto
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.conf  text eol=lf
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.java  text eol=lf
+*.xml   text eol=lf
+*.ts    text eol=lf
+*.vue   text eol=lf
+*.jar   binary
+*.png   binary
+*.gz    binary
+*.zip   binary

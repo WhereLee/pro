@@ -147,7 +147,9 @@ public final class ScenarioRunner {
     }
 
     private void assertStep(int index, JsonNode step) {
-        long timeoutMs = step.path("timeoutMs").asLong(8000);
+        // 超时不再信任场景文件里的小数值：写死 2000ms 正是“拿固定时长猜异步”的老形状，
+        // 它会把 CI 上的机器延迟当成缺陷。场景只能抬高、不能压低这个下限。
+        long timeoutMs = Math.max(8000, step.path("timeoutMs").asLong(8000));
         long deadline = System.currentTimeMillis() + timeoutMs;
         List<String> failures;
         do {
@@ -180,14 +182,20 @@ public final class ScenarioRunner {
         if (step.hasNonNull("waitEvent")) {
             String eventType = step.path("waitEvent").asText();
             if (cloud.eventsOfType(eventType).isEmpty()) {
-                failures.add("期望事件未出现：" + eventType + "；实际到达顺序=" + cloud.arrivalOrder());
+                failures.add("期望事件未出现：" + eventType + "；设备侧已发事件=" + device.eventsSent()
+                        + "，观测者到达顺序=" + cloud.arrivalOrder());
             }
         }
         if (cmd != null && step.hasNonNull("replyCode")) {
             String expected = step.path("replyCode").asText();
             List<SimProtocol.Envelope> replies = cloud.replies(cmd);
             if (replies.isEmpty()) {
-                failures.add("指令 " + cmd + " 没有任何应答；实际到达顺序=" + cloud.arrivalOrder());
+                // 必须区分“设备没收到指令”与“设备收到了但没回应答”：两者的修复方向完全不同。
+                // 不报这个计数时，CI 上只能看到一个空列表，下次还是猜。
+                failures.add("指令 " + cmd + " 没有任何应答；设备侧计数 received=" + device.commandsReceived()
+                        + " 已回应答=" + device.repliesSent() + " 事件=" + device.eventsSent()
+                        + " 拒绝=" + device.rejectedInbound() + " 注入触发=" + device.faults().fired()
+                        + "；观测者到达顺序=" + cloud.arrivalOrder());
             } else {
                 String actual = replies.get(replies.size() - 1).code();
                 if (!expected.equals(actual)) {

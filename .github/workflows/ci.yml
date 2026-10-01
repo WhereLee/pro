@@ -277,14 +277,24 @@ jobs:
         working-directory: buddy-sim
         run: mvn -B -ntp -DskipTests package
 
+      - name: Self-check driver script (argument assembly)
+        # 先跑这一步的理由是真实的：上一版脚本的 api 调用参数个数写错，令牌静默为空，
+        # 而它要等到起完后端、走完登录才表现为一个 401——一次 CI 周期 6 分钟。
+        # selftest 不需要后端，几十毫秒就能把同类错误拦住。
+        run: bash scripts/cross-process-swap.sh --selftest
+
       - name: Start backend (dev/H2, embedded MQTT broker) and wait for health
         working-directory: buddy
         run: |
           nohup java -jar target/buddy.jar --spring.profiles.active=dev > backend.log 2>&1 &
+          up=""
           for i in $(seq 1 60); do
             sleep 3
-            if curl -sf http://localhost:8200/api/actuator/health | grep -q '"status":"UP"'; then echo BACKEND_UP; break; fi
+            if curl -sf http://localhost:8200/api/actuator/health | grep -q '"status":"UP"'; then up=1; echo BACKEND_UP; break; fi
           done
+          # 以前这里只是循环结束就往下走：后端没起来时症状会变成下游一句 curl 失败，
+          # 看上去像脚本或协议问题，而不是"服务根本没起来"。
+          if [ -z "$up" ]; then echo "后端 180s 内未就绪，最后 60 行日志："; tail -60 backend.log; exit 1; fi
 
       - name: Run one real swap across two processes
         env:
