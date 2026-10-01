@@ -46,7 +46,11 @@ build_args() {  # build_args METHOD PATH [JSON] [TOKEN] -> 打印参数，每行
   printf '%s\n' -sS -X "$method" "$BASE$path" -H 'content-type: application/json; charset=utf-8'
   if [ -n "$token" ]; then printf '%s\n' -H "Authorization: Bearer $token"; fi
   if [ -n "$body" ]; then printf '%s\n' -d "$body"; fi
-  printf '%s\n' -w $'\n%{http_code}'
+  # 写 '\n%{http_code}'（字面反斜杠 n）而不是 $'\n%{http_code}'：
+  # 后者会把真换行带进步骤里的“按行装数组”，拆出一个**空参数**，
+  # curl 把空串当 URL 解析 → "curl: (3) URL rejected: Bad hostname"。
+  # curl 自己会把 -w 里的 \n 解释成换行，所以这里必须用字面量。
+  printf '%s\n' -w '\n%{http_code}'
 }
 
 api() {  # api METHOD PATH [JSON] [TOKEN] -> 成功时打印响应体；失败返回非 0 并打印可定位信息
@@ -64,7 +68,11 @@ api() {  # api METHOD PATH [JSON] [TOKEN] -> 成功时打印响应体；失败�
     return 1
   fi
   status="${out##*$'\n'}"
-  if [ "$status" -ge 400 ] 2>/dev/null; then
+  if ! [[ "$status" =~ ^[0-9]+$ ]]; then
+    echo "!! api $method $path：拿不到 HTTP 状态码（got '$status'），响应体前 200 字：$(printf '%s' "$out" | head -c 200)" >&2
+    return 1
+  fi
+  if [ "$status" -ge 400 ]; then
     echo "!! api $method $path → HTTP $status，带令牌=$([ -n "$token" ] && echo yes || echo no)" >&2
     printf '%s\n' "${out%$'\n'*}" >&2
     return 1
@@ -109,7 +117,15 @@ selftest() {
   else
     echo "  [PASS] METHOD/PATH 顺序写反时硬失败"
   fi
-  # 5) 真实调用形态：body + 令牌同时存在时，令牌仍在
+  # 5) 参数数组里不得出现空元素（空串会被 curl 当成 URL，就是上面那个 Bad hostname）
+  local empties
+  empties="$(build_args POST /x '{"a":1}' 'TOK' | awk 'BEGIN{n=0} $0==""{n++} END{print n}')"
+  if [ "$empties" = "0" ]; then
+    echo "  [PASS] 装配后的参数数组无空元素"
+  else
+    echo "  [FAIL] 参数数组里有 $empties 个空元素（curl 会把它当 URL）"; fails=$((fails + 1))
+  fi
+  # 6) 真实调用形态：body + 令牌同时存在时，令牌仍在
   local both; both="$(build_args POST /swap/devices '{"productKey":"P"}' 'ADM' | tr '\n' '~')"
   case "$both" in
     *"-d~{\"productKey\":\"P\"}~-w"*) echo "  [PASS] body 与令牌可共存" ;;
