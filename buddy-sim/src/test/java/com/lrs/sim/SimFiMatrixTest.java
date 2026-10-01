@@ -63,6 +63,7 @@ class SimFiMatrixTest {
     @DisplayName("场景每一步的断言都必须成立（不只看有没有抛异常）")
     void scenarioPassesEveryStep(Path file) throws Exception {
         Scenario scenario = Scenario.read(file);
+        long lostBefore = SimBrokerHarness.lostRouteCount();
         try (Harness harness = openHarness(scenario.seed(), "FI-" + scenario.name())) {
             ScenarioRunner runner = new ScenarioRunner(harness.device(), harness.cloud());
             List<ScenarioRunner.StepResult> steps = runner.run(scenario);
@@ -71,6 +72,11 @@ class SimFiMatrixTest {
             // 至少要有一条 assert：只有注入没有断言的场景文件是"跑过了"而不是"验过了"
             assertThat(steps).as("场景 " + scenario.name() + " 没有任何 assert 步骤")
                     .anyMatch(step -> "assert".equals(step.doWhat()));
+            // 这一条把“测试替身自己把消息弄丢”和“设备没处理”分开：
+            // 没有它时，harness 的路由缺失只能表现为设备 received=0，归因方完全错。
+            assertThat(SimBrokerHarness.lostRouteCount() - lostBefore)
+                    .as("场景 " + scenario.name() + " 有下行报文未被路由到任何订阅者（问题在 harness，不在设备侧）")
+                    .isZero();
         }
     }
 
