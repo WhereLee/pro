@@ -220,12 +220,19 @@ public class SwapCompensationExecutor {
     private void writeDiscrepancy(long orderId, Long targetId, Map<String, Object> row, SwapOrderRepository.OrderRow order,
                                   LocalDateTime now) {
         String remark = row.get("remark") == null ? null : String.valueOf(row.get("remark"));
-        int sep = remark == null ? -1 : remark.indexOf(':');
-        if (sep <= 0 || sep + 1 >= remark.trim().length()) {
+        // 先归一化再按下标切：上一版拿 trim() 后的长度去比未 trim 的下标，
+        // 前导空格会把判定推歪（合法输入被拒）。两者必须在同一个串上算。
+        String spec = remark == null ? null : remark.trim();
+        int sep = spec == null ? -1 : spec.indexOf(':');
+        if (sep <= 0 || sep >= spec.length() - 1) {
             throw new IllegalArgumentException("WRITE_DISCREPANCY 必须在 remark 写明差异类型与说明（<KIND>:<说明>）");
         }
-        String kind = remark.substring(0, sep).trim().toUpperCase(Locale.ROOT);
-        String detail = remark.substring(sep + 1).trim();
+        String kind = spec.substring(0, sep).trim().toUpperCase(Locale.ROOT);
+        String detail = spec.substring(sep + 1).trim();
+        if (kind.isEmpty() || detail.isEmpty()) {
+            // kind 为空时 DB 的 CHECK 会拒成 FAILED 反复重试，那不是报错而是惩罚：在入口就拒掉
+            throw new IllegalArgumentException("WRITE_DISCREPANCY 的 remark 形如 <KIND>:<说明>，两侧都不得为空");
+        }
         String targetType = row.get("target_type") == null ? "ORDER" : String.valueOf(row.get("target_type"));
         Long battery = "BATTERY".equals(targetType) ? targetId : null;
         Long cabinet = "CABINET".equals(targetType) ? targetId : null;
