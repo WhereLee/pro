@@ -6,6 +6,7 @@ import com.hivemq.client.mqtt.MqttClient;
 import com.hivemq.client.mqtt.MqttGlobalPublishFilter;
 import com.hivemq.client.mqtt.datatypes.MqttQos;
 import com.hivemq.client.mqtt.mqtt5.Mqtt5BlockingClient;
+import com.hivemq.client.mqtt.mqtt5.Mqtt5BlockingClient.Mqtt5Publishes;
 import com.hivemq.client.mqtt.mqtt5.message.publish.Mqtt5Publish;
 import com.lrs.sim.device.CabinetDevice;
 import com.lrs.sim.fault.FaultPolicy;
@@ -46,6 +47,14 @@ public class DeviceLink implements AutoCloseable {
     private final ValidationChain chain;
     private final AtomicLong seq = new AtomicLong();
     private final AtomicBoolean running = new AtomicBoolean();
+
+    /**
+     * 下行发布流。必须在 {@link #connect()} 内同步注册好：
+     * 若留到消费线程里再注册，connect() 返回后、线程尚未注册前到达的指令**会被丢弃**
+     * （HiveMQ 的 publishes() 不回溯投递）。本机因为线程抢在前面而全绿，
+     * CI 上则固定表现为“第一条下行指令 received=0”——这是设备侧实现缺陷，不是测试替身的问题。
+     */
+    private volatile Mqtt5Publishes publishes;
     private final String from;
 
     /**
@@ -159,6 +168,10 @@ public class DeviceLink implements AutoCloseable {
         client.connectWith().cleanStart(true).keepAlive(60).send();
         client.subscribeWith().topicFilter("swap/v1/dn/" + productKey + "/" + deviceId + "/#")
                 .qos(MqttQos.AT_LEAST_ONCE).send();
+        // 发布流必须在 connect() 内同步注册、再起消费线程。
+        // 这不是风格问题：已实测证明 publishes() 不回溯投递，注册前到达的下行报文直接丢失
+        // （下面那个窗口存在时，回归用例会以 received=0 失败，与 CI 形状一致）。
+        publishes = client.publishes(MqttGlobalPublishFilter.ALL);
         running.set(true);
         Thread consumer = new Thread(this::consumeLoop, "sim-" + deviceId + "-consumer");
         consumer.setDaemon(true);
@@ -178,10 +191,13 @@ public class DeviceLink implements AutoCloseable {
     }
 
     private void consumeLoop() {
-        var publishes = client.publishes(MqttGlobalPublishFilter.ALL);
+        Mqtt5Publishes stream = publishes;
+        if (stream == null) {
+            return;
+        }
         while (running.get()) {
             try {
-                Optional<Mqtt5Publish> next = publishes.receive(300, TimeUnit.MILLISECONDS);
+                Optional<Mqtt5Publish> next = stream.receive(300, TimeUnit.MILLISECONDS);
                 if (next.isPresent()) {
                     handleCommand(next.get());
                 }

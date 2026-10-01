@@ -181,6 +181,30 @@ class SimFiMatrixTest {
      * 症状是"上一段场景的报文莫名丢了"，而看上去像设备侧故障。
      * 这里刻意不 connect 设备：场景第一步 {@code {"do":"link","op":"connect"}} 就是它的。
      */
+    @Test
+    @DisplayName("connect() 返回后的第一条指令不得丢（设备侧发布流注册时序回归）")
+    void firstCommandAfterConnectIsNeverLost() throws Exception {
+        // 只写这一条就能拖住一个真缺陷：旧实现把 publishes() 注册放在消费线程里，
+        // connect() 返回与线程注册之间有窗口，CI 上固定丢第一条，本机因为线程快而全绿。
+        // 这里不加任何 sleep：就赌“立即发”，否则测不到窗口。
+        int rounds = 40;
+        for (int round = 1; round <= rounds; round++) {
+            try (Harness harness = openHarness(1000L + round, "FIRST-" + round)) {
+                harness.device().connect();
+                harness.cloud().connect();
+                harness.cloud().sendCommand("OPEN_SLOT",
+                        com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode().put("slotNo", 1), 30);
+                long deadline = System.currentTimeMillis() + 3000;
+                while (harness.device().commandsReceived() == 0 && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(20);
+                }
+                assertThat(harness.device().commandsReceived())
+                        .as("第 " + round + " 轮：connect() 后立即下发的第一条指令未被设备收到")
+                        .isEqualTo(1);
+            }
+        }
+    }
+
     private Harness openHarness(long seed, String tag) {
         String deviceId = "CAB-FI-" + tag.replaceAll("[^A-Za-z0-9]", "") + "-" + SLOT_TAG.incrementAndGet();
         CabinetDevice cabinet = new CabinetDevice(deviceId, 8, 30.0);
